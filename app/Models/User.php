@@ -19,8 +19,13 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
+        'customer_type',
         'permissions',
         'status',
+        'risk_level',
+        'risk_score',
+        'risk_reasons',
+        'internal_notes',
         'suspended_until',
         'suspension_reason',
         'phone',
@@ -39,6 +44,8 @@ class User extends Authenticatable
             'suspended_until' => 'datetime',
             'password' => 'hashed',
             'permissions' => 'array',
+            'risk_reasons' => 'array',
+            'risk_score' => 'integer',
         ];
     }
 
@@ -62,6 +69,21 @@ class User extends Authenticatable
         return $this->role === 'customer';
     }
 
+    public function isGuest(): bool
+    {
+        return $this->customer_type === 'guest';
+    }
+
+    public function isBlocked(): bool
+    {
+        return $this->status === 'blocked';
+    }
+
+    public function isUnderReview(): bool
+    {
+        return $this->status === 'review';
+    }
+
     public function isSuspended(): bool
     {
         if ($this->status !== 'suspended') {
@@ -83,7 +105,7 @@ class User extends Authenticatable
 
     public function isActive(): bool
     {
-        return !$this->isSuspended();
+        return $this->status === 'active';
     }
 
     public function hasPermission(string $permission): bool
@@ -117,5 +139,10 @@ class User extends Authenticatable
     public function auditLogs(): HasMany
     {
         return $this->hasMany(AuditLog::class);
+    }
+
+    public function customerIpLogs(): HasMany
+    {
+        return $this->hasMany(CustomerIpLog::class);
     }
 }

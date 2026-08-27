@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -117,22 +118,86 @@ class AuthController extends Controller
 
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
+            'email' => ['sometimes', 'required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
             'phone' => 'nullable|string|max:30',
             'avatar' => 'nullable|string',
-            'password' => 'nullable|string|min:6',
+            'current_password' => 'nullable|string',
+            'password' => 'nullable|string',
+            'new_password' => 'nullable|string',
+            'password_confirmation' => 'nullable|string',
+            'confirm_password' => 'nullable|string',
         ]);
 
-        if (!empty($validated['password'])) {
-            $validated['password'] = Hash::make($validated['password']);
+        $currentPassword = $request->input('current_password');
+
+        // Verify current password if user is changing email
+        if (!empty($validated['email']) && strtolower(trim($validated['email'])) !== strtolower(trim($user->email))) {
+            if (empty($currentPassword)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['Please enter your current password to authorize changing your email address.'],
+                ]);
+            }
+
+            if (!Hash::check($currentPassword, $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['The current password you entered is incorrect.'],
+                ]);
+            }
+        }
+
+        // Verify current password if user is changing password
+        $newPassword = $request->input('password') ?? $request->input('new_password');
+
+        if (!empty($newPassword)) {
+            $confirmPassword = $request->input('password_confirmation') ?? $request->input('confirm_password');
+
+            if (empty($currentPassword)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['Please enter your current password to set a new password.'],
+                ]);
+            }
+
+            if (!Hash::check($currentPassword, $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['The current password you entered is incorrect.'],
+                ]);
+            }
+
+            if (strlen($newPassword) < 6) {
+                throw ValidationException::withMessages([
+                    'password' => ['New password must be at least 6 characters.'],
+                ]);
+            }
+
+            if ($newPassword !== $confirmPassword) {
+                throw ValidationException::withMessages([
+                    'password_confirmation' => ['The new password confirmation does not match.'],
+                ]);
+            }
+
+            $validated['password'] = Hash::make($newPassword);
         } else {
             unset($validated['password']);
         }
 
+        unset($validated['current_password'], $validated['new_password'], $validated['password_confirmation'], $validated['confirm_password']);
+
         $user->update($validated);
+
+        if (!empty($newPassword)) {
+            $user->tokens()->where('id', '!=', $user->currentAccessToken()?->id)->delete();
+        }
 
         return response()->json([
             'message' => 'Profile updated successfully',
-            'user' => $user,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role,
+                'phone' => $user->phone,
+                'avatar' => $user->avatar,
+            ],
         ]);
     }
 

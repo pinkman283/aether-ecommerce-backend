@@ -11,14 +11,18 @@ use Illuminate\Support\Str;
 
 class AdminCategoryController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'categories.manage', 'products.view', 'products.manage');
+
         $categories = Category::withCount('products')->orderBy('display_order')->get();
         return response()->json($categories);
     }
 
     public function store(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'categories.manage');
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
@@ -61,6 +65,8 @@ class AdminCategoryController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'categories.manage');
+
         $category = Category::findOrFail($id);
         $oldValues = $category->toArray();
 
@@ -98,6 +104,8 @@ class AdminCategoryController extends Controller
 
     public function destroy(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'categories.manage');
+
         $category = Category::withCount('products')->findOrFail($id);
 
         if ($category->products_count > 0) {
@@ -119,6 +127,52 @@ class AdminCategoryController extends Controller
 
         return response()->json([
             'message' => "Category '{$name}' deleted successfully",
+        ]);
+    }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'categories.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:categories,id',
+        ]);
+
+        $deletedCount = 0;
+        $skippedCount = 0;
+
+        foreach ($validated['ids'] as $id) {
+            $category = Category::withCount('products')->find($id);
+            if (!$category) continue;
+
+            if ($category->products_count > 0) {
+                $skippedCount++;
+                continue;
+            }
+
+            $name = $category->name;
+            $category->delete();
+            $deletedCount++;
+
+            AuditLog::log(
+                $request->user(),
+                'category.deleted',
+                'Category',
+                $id,
+                "Bulk deleted category '{$name}'"
+            );
+        }
+
+        $message = "Successfully deleted {$deletedCount} category/categories.";
+        if ($skippedCount > 0) {
+            $message .= " {$skippedCount} categories with assigned products were skipped.";
+        }
+
+        return response()->json([
+            'message' => $message,
+            'deleted_count' => $deletedCount,
+            'skipped_count' => $skippedCount,
         ]);
     }
 }

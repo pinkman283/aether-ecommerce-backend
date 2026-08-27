@@ -13,8 +13,10 @@ use Illuminate\Support\Str;
 
 class AdminController extends Controller
 {
-    public function analytics(): JsonResponse
+    public function analytics(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'analytics.view', 'finance.reports_view');
+
         $totalRevenue = Order::where('payment_status', 'paid')->sum('total_amount');
         $totalOrders = Order::count();
         $totalCustomers = User::where('role', 'customer')->count();
@@ -56,6 +58,8 @@ class AdminController extends Controller
 
     public function orders(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
         $query = Order::with(['items', 'user'])->latest();
 
         if ($request->filled('status')) {
@@ -68,6 +72,8 @@ class AdminController extends Controller
 
     public function updateOrderStatus(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $order = Order::findOrFail($id);
 
         $validated = $request->validate([
@@ -94,6 +100,8 @@ class AdminController extends Controller
 
     public function products(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'products.view', 'products.manage');
+
         $query = Product::with(['category', 'primaryImage', 'variants'])->latest();
 
         if ($request->filled('search')) {
@@ -107,6 +115,8 @@ class AdminController extends Controller
 
     public function storeProduct(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'products.manage');
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'category_id' => 'required|exists:categories,id',
@@ -161,6 +171,8 @@ class AdminController extends Controller
 
     public function updateProduct(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'products.manage');
+
         $product = Product::findOrFail($id);
 
         $validated = $request->validate([
@@ -185,8 +197,10 @@ class AdminController extends Controller
         ]);
     }
 
-    public function deleteProduct(int $id): JsonResponse
+    public function deleteProduct(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'products.manage');
+
         $product = Product::findOrFail($id);
         $product->delete();
 

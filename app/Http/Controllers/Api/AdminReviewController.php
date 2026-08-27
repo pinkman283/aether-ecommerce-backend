@@ -13,6 +13,8 @@ class AdminReviewController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'reviews.manage', 'products.view');
+
         $query = Review::with('product')->latest();
 
         if ($request->filled('search')) {
@@ -44,6 +46,8 @@ class AdminReviewController extends Controller
 
     public function toggleApproval(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'reviews.manage');
+
         $review = Review::with('product')->findOrFail($id);
         $newStatus = !$review->is_approved;
 
@@ -77,6 +81,8 @@ class AdminReviewController extends Controller
 
     public function destroy(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'reviews.manage');
+
         $review = Review::with('product')->findOrFail($id);
         $product = $review->product;
         $author = $review->user_name;
@@ -102,5 +108,56 @@ class AdminReviewController extends Controller
         );
 
         return response()->json(['message' => 'Review deleted successfully.']);
+    }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:reviews,id',
+        ]);
+
+        $count = 0;
+        $affectedProductIds = [];
+
+        foreach ($validated['ids'] as $id) {
+            $review = Review::find($id);
+            if ($review) {
+                $productId = $review->product_id;
+                $author = $review->user_name;
+                $review->delete();
+                $count++;
+
+                if ($productId) {
+                    $affectedProductIds[$productId] = true;
+                }
+
+                AuditLog::log(
+                    $request->user(),
+                    'review.deleted',
+                    'Review',
+                    $id,
+                    "Bulk deleted review #{$id} by {$author}."
+                );
+            }
+        }
+
+        // Recalculate ratings for affected products
+        foreach (array_keys($affectedProductIds) as $pId) {
+            $approvedReviews = Review::where('product_id', $pId)->where('is_approved', true);
+            $pCount = $approvedReviews->count();
+            $avg = $pCount > 0 ? round($approvedReviews->avg('rating'), 2) : 5.0;
+            Product::where('id', $pId)->update([
+                'rating_average' => $avg,
+                'review_count' => $pCount,
+            ]);
+        }
+
+        return response()->json([
+            'message' => "Successfully deleted {$count} review(s).",
+            'deleted_count' => $count,
+        ]);
     }
 }

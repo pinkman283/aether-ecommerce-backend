@@ -12,6 +12,8 @@ class AdminInventoryController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'inventory.manage', 'inventory.valuation', 'products.view');
+
         $query = Product::with(['category', 'primaryImage', 'variants'])->select([
             'id', 'category_id', 'name', 'sku', 'price', 'stock_quantity', 'is_active', 'updated_at'
         ]);
@@ -48,6 +50,8 @@ class AdminInventoryController extends Controller
 
     public function adjustStock(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'inventory.manage', 'inventory.adjust');
+
         $product = Product::findOrFail($id);
         $oldStock = $product->stock_quantity;
 

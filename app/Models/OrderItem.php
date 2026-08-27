@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class OrderItem extends Model
 {
@@ -19,18 +20,23 @@ class OrderItem extends Model
         'product_image',
         'variant_name',
         'unit_price',
+        'cogs_unit_cost',
+        'cogs_total',
         'quantity',
+        'discount_amount',
         'total_price',
+        'gross_profit',
     ];
 
-    protected function casts(): array
-    {
-        return [
-            'unit_price' => 'float',
-            'quantity' => 'integer',
-            'total_price' => 'float',
-        ];
-    }
+    protected $casts = [
+        'unit_price' => 'float',
+        'cogs_unit_cost' => 'float',
+        'cogs_total' => 'float',
+        'quantity' => 'integer',
+        'discount_amount' => 'float',
+        'total_price' => 'float',
+        'gross_profit' => 'float',
+    ];
 
     public function order(): BelongsTo
     {
@@ -45,5 +51,10 @@ class OrderItem extends Model
     public function variant(): BelongsTo
     {
         return $this->belongsTo(ProductVariant::class);
+    }
+
+    public function costLayers(): HasMany
+    {
+        return $this->hasMany(OrderItemCostLayer::class);
     }
 }

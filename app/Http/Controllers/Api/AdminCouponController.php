@@ -12,6 +12,8 @@ class AdminCouponController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'coupons.manage');
+
         $query = Coupon::latest();
 
         if ($request->filled('search')) {
@@ -35,6 +37,8 @@ class AdminCouponController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'coupons.manage');
+
         $validated = $request->validate([
             'code' => 'required|string|max:50|unique:coupons,code',
             'type' => 'required|in:percentage,fixed',
@@ -66,6 +70,8 @@ class AdminCouponController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'coupons.manage');
+
         $coupon = Coupon::findOrFail($id);
         $oldValues = $coupon->toArray();
 
@@ -109,6 +115,8 @@ class AdminCouponController extends Controller
 
     public function destroy(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'coupons.manage');
+
         $coupon = Coupon::findOrFail($id);
         $code = $coupon->code;
         $coupon->delete();
@@ -123,6 +131,40 @@ class AdminCouponController extends Controller
 
         return response()->json([
             'message' => "Coupon '{$code}' deleted successfully",
+        ]);
+    }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'coupons.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:coupons,id',
+        ]);
+
+        $count = 0;
+
+        foreach ($validated['ids'] as $id) {
+            $coupon = Coupon::find($id);
+            if ($coupon) {
+                $code = $coupon->code;
+                $coupon->delete();
+                $count++;
+
+                AuditLog::log(
+                    $request->user(),
+                    'coupon.deleted',
+                    'Coupon',
+                    $id,
+                    "Bulk deleted coupon '{$code}'"
+                );
+            }
+        }
+
+        return response()->json([
+            'message' => "Successfully deleted {$count} coupon(s).",
+            'deleted_count' => $count,
         ]);
     }
 }

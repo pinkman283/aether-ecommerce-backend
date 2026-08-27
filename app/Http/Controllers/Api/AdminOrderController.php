@@ -16,6 +16,8 @@ class AdminOrderController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
         $query = Order::with(['items.product', 'user'])->latest();
 
         if ($request->filled('search')) {
@@ -64,14 +66,18 @@ class AdminOrderController extends Controller
         return response()->json($orders);
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
         $order = Order::with(['items.product', 'items.variant', 'user'])->findOrFail($id);
         return response()->json($order);
     }
 
     public function store(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $validated = $request->validate([
             'customer_name' => 'required|string|max:255',
             'customer_email' => 'required|email|max:255',
@@ -150,6 +156,7 @@ class AdminOrderController extends Controller
             'carrier' => $validated['carrier'] ?? null,
             'tracking_code' => $validated['tracking_code'] ?? null,
             'notes' => $validated['notes'] ?? 'Order created via Admin Console.',
+            'ip_address' => $request->ip(),
             'shipped_at' => $validated['order_status'] === 'shipped' ? now() : null,
             'delivered_at' => $validated['order_status'] === 'delivered' ? now() : null,
         ]);
@@ -186,13 +193,14 @@ class AdminOrderController extends Controller
             'shipping_address' => 'nullable|array',
             'order_status' => 'sometimes|required|in:pending,processing,shipped,delivered,cancelled,refunded',
             'payment_status' => 'sometimes|required|in:pending,paid,failed,refunded',
-            'payment_method' => 'nullable|string',
             'carrier' => 'nullable|string|max:100',
             'tracking_code' => 'nullable|string|max:100',
-            'shipping_amount' => 'nullable|numeric|min:0',
-            'tax_amount' => 'nullable|numeric|min:0',
-            'discount_amount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'shipping_address' => 'nullable|array',
+            'billing_address' => 'nullable|array',
+            'customer_name' => 'sometimes|required|string|max:255',
+            'customer_email' => 'sometimes|required|email|max:255',
+            'customer_phone' => 'nullable|string|max:30',
         ]);
 
         if (isset($validated['order_status']) && $validated['order_status'] === 'shipped' && !$order->shipped_at) {
@@ -226,6 +234,8 @@ class AdminOrderController extends Controller
 
     public function updateStatus(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $order = Order::with('items')->findOrFail($id);
         $oldStatus = $order->order_status;
 
@@ -276,6 +286,8 @@ class AdminOrderController extends Controller
 
     public function destroy(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $order = Order::with('items')->findOrFail($id);
         $orderNumber = $order->order_number;
         $oldValues = $order->toArray();
@@ -309,6 +321,8 @@ class AdminOrderController extends Controller
 
     public function refund(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $order = Order::findOrFail($id);
 
         if ($order->payment_status === 'refunded') {
@@ -345,6 +359,44 @@ class AdminOrderController extends Controller
         return response()->json([
             'message' => "Order {$order->order_number} successfully marked as refunded.",
             'order' => $order->fresh(['items']),
+        ]);
+    }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:orders,id',
+        ]);
+
+        $count = 0;
+
+        foreach ($validated['ids'] as $id) {
+            $order = Order::find($id);
+            if ($order) {
+                $orderNumber = $order->order_number;
+                $oldValues = $order->toArray();
+                $order->items()->delete();
+                $order->delete();
+                $count++;
+
+                AuditLog::log(
+                    $request->user(),
+                    'order.deleted',
+                    'Order',
+                    $id,
+                    "Bulk deleted order #{$orderNumber}.",
+                    $oldValues,
+                    null
+                );
+            }
+        }
+
+        return response()->json([
+            'message' => "Successfully deleted {$count} order(s).",
+            'deleted_count' => $count,
         ]);
     }
 }

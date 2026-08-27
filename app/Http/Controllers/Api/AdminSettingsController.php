@@ -10,14 +10,18 @@ use Illuminate\Http\Request;
 
 class AdminSettingsController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'settings.manage');
+
         $settings = Setting::all()->keyBy('key');
         return response()->json($settings);
     }
 
     public function update(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'settings.manage');
+
         $validated = $request->validate([
             'settings' => 'required|array',
             'settings.*' => 'nullable',

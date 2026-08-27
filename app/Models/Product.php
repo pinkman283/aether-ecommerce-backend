@@ -76,6 +76,31 @@ class Product extends Model
         return $this->hasMany(Review::class)->where('is_approved', true)->latest();
     }
 
+    public function vendorProducts(): HasMany
+    {
+        return $this->hasMany(VendorProduct::class);
+    }
+
+    public function costLayers(): HasMany
+    {
+        return $this->hasMany(InventoryCostLayer::class)->orderBy('created_at', 'asc');
+    }
+
+    public function activeCostLayers(): HasMany
+    {
+        return $this->hasMany(InventoryCostLayer::class)->where('is_depleted', false)->orderBy('created_at', 'asc');
+    }
+
+    public function movements(): HasMany
+    {
+        return $this->hasMany(InventoryMovement::class)->latest();
+    }
+
+    public function purchaseOrderItems(): HasMany
+    {
+        return $this->hasMany(PurchaseOrderItem::class);
+    }
+
     public function scopeActive(Builder $query): Builder
     {
         return $query->where('is_active', true);

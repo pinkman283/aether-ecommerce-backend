@@ -14,6 +14,8 @@ class AdminStaffController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->checkPermission($request, 'staff.view', 'staff.manage');
+
         $staff = User::whereIn('role', ['staff', 'admin', 'super_admin'])
             ->latest()
             ->get([
@@ -368,5 +370,56 @@ class AdminStaffController extends Controller
         );
 
         return response()->json(['message' => "Administrative account '{$name}' deleted successfully."]);
+    }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:users,id',
+        ]);
+
+        $currentUser = $request->user();
+        $deletedCount = 0;
+        $skippedCount = 0;
+
+        foreach ($validated['ids'] as $id) {
+            if ($id === $currentUser->id) {
+                $skippedCount++;
+                continue;
+            }
+
+            $staff = User::whereIn('role', ['staff', 'admin', 'super_admin'])->find($id);
+            if (!$staff) continue;
+
+            if ($staff->isSuperAdmin()) {
+                $skippedCount++;
+                continue;
+            }
+
+            $name = $staff->name;
+            $staff->tokens()->delete();
+            $staff->delete();
+            $deletedCount++;
+
+            AuditLog::log(
+                $currentUser,
+                'staff.deleted',
+                'User',
+                $id,
+                "Bulk deleted administrative account '{$name}'"
+            );
+        }
+
+        $msg = "Successfully deleted {$deletedCount} staff member(s).";
+        if ($skippedCount > 0) {
+            $msg .= " ({$skippedCount} protected/self account(s) skipped)";
+        }
+
+        return response()->json([
+            'message' => $msg,
+            'deleted_count' => $deletedCount,
+            'skipped_count' => $skippedCount,
+        ]);
     }
 }
