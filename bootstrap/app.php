@@ -25,6 +25,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'super_admin' => EnsureSuperAdmin::class,
             'abilities' => \Laravel\Sanctum\Http\Middleware\CheckAbilities::class,
             'ability' => \Laravel\Sanctum\Http\Middleware\CheckForAnyAbility::class,
+            'sliding-throttle' => \App\Http\Middleware\SlidingWindowThrottle::class,
+            'throttle' => \App\Http\Middleware\SlidingWindowThrottle::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

@@ -13,40 +13,48 @@ class ReviewController extends Controller
     public function store(Request $request, int $productId): JsonResponse
     {
         $product = Product::findOrFail($productId);
-        $user = $request->user();
-
-        if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
+        $user = auth('sanctum')->user() ?? $request->user();
 
         $validated = $request->validate([
             'rating' => 'required|integer|min:1|max:5',
             'title' => 'nullable|string|max:255',
-            'comment' => 'required|string|min:5|max:2000',
+            'comment' => 'nullable|string|max:2000',
+            'user_name' => 'nullable|string|max:100',
         ]);
 
-        // Server-side check if user actually purchased and paid for this item
-        $isVerifiedPurchase = $user->orders()
-            ->where('payment_status', 'paid')
-            ->whereHas('items', function ($q) use ($product) {
-                $q->where('product_id', $product->id);
-            })
-            ->exists();
+        $isVerifiedPurchase = false;
+        $userName = trim($validated['user_name'] ?? '') ?: 'Verified Studio Customer';
+        $userAvatar = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80';
+        $userId = null;
+
+        if ($user) {
+            $userId = $user->id;
+            $userName = $user->name ?: $userName;
+            $userAvatar = $user->avatar ?: $userAvatar;
+
+            // Server-side check if user actually purchased and paid for this item
+            $isVerifiedPurchase = $user->orders()
+                ->where('payment_status', 'paid')
+                ->whereHas('items', function ($q) use ($product) {
+                    $q->where('product_id', $product->id);
+                })
+                ->exists();
+        }
 
         $review = Review::create([
             'product_id' => $product->id,
-            'user_id' => $user->id,
-            'user_name' => $user->name,
-            'user_avatar' => $user->avatar ?? 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+            'user_id' => $userId,
+            'user_name' => $userName,
+            'user_avatar' => $userAvatar,
             'rating' => $validated['rating'],
             'title' => $validated['title'] ?? null,
-            'comment' => $validated['comment'],
+            'comment' => $validated['comment'] ?? null,
             'is_verified_purchase' => $isVerifiedPurchase,
             'is_approved' => true,
         ]);
 
         // Recalculate average rating & review count
-        $avgRating = $product->reviews()->where('is_approved', true)->avg('rating') ?: 5.0;
+        $avgRating = $product->reviews()->where('is_approved', true)->avg('rating') ?: 0.0;
         $count = $product->reviews()->where('is_approved', true)->count();
 
         $product->update([

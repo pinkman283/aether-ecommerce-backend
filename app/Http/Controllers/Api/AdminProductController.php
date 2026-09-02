@@ -104,6 +104,12 @@ class AdminProductController extends Controller
             'images.*.display_order' => 'nullable|integer',
             'specifications' => 'nullable|array',
             'tags' => 'nullable|array',
+            'variants' => 'nullable|array',
+            'variants.*.name' => 'required_with:variants|string|max:100',
+            'variants.*.color_name' => 'nullable|string|max:100',
+            'variants.*.color_hex' => 'nullable|string|max:50',
+            'variants.*.stock_quantity' => 'nullable|integer|min:0',
+            'variants.*.price_modifier' => 'nullable|numeric|min:0',
         ]);
 
         // Normalize images list
@@ -157,7 +163,7 @@ class AdminProductController extends Controller
             'is_new_arrival' => $validated['is_new_arrival'] ?? true,
             'is_best_seller' => $validated['is_best_seller'] ?? false,
             'is_active' => $validated['is_active'] ?? true,
-            'rating_average' => 5.0,
+            'rating_average' => 0.00,
             'review_count' => 0,
             'specifications' => $validated['specifications'] ?? [],
             'tags' => $validated['tags'] ?? [],
@@ -189,12 +195,34 @@ class AdminProductController extends Controller
             ]);
         }
 
+        // Save Color & Inventory Variants
+        $variantItems = $validated['variants'] ?? [];
+        if (!empty($variantItems) && is_array($variantItems)) {
+            $totalVariantStock = 0;
+            foreach ($variantItems as $v) {
+                if (empty($v['name']) && empty($v['color_name'])) continue;
+                $vStock = (int)($v['stock_quantity'] ?? 0);
+                $totalVariantStock += $vStock;
+                $product->variants()->create([
+                    'name' => $v['name'] ?? ($v['color_name'] ?? 'Default Edition'),
+                    'color_name' => $v['color_name'] ?? $v['name'] ?? null,
+                    'color_hex' => $v['color_hex'] ?? null,
+                    'stock_quantity' => $vStock,
+                    'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,
+                    'sku' => $product->sku . '-' . strtoupper(Str::random(4)),
+                ]);
+            }
+            if ($totalVariantStock > 0 || count($variantItems) > 0) {
+                $product->update(['stock_quantity' => $totalVariantStock]);
+            }
+        }
+
         AuditLog::log(
             $request->user(),
             'product.created',
             'Product',
             $product->id,
-            "Created hardware product '{$product->name}' (SKU: {$product->sku}) with " . count($imageItems) . " image(s)",
+            "Created hardware product '{$product->name}' (SKU: {$product->sku}) with " . count($imageItems) . " image(s) and " . count($variantItems) . " color variant(s)",
             null,
             $product->toArray()
         );
@@ -233,6 +261,12 @@ class AdminProductController extends Controller
             'images.*.display_order' => 'nullable|integer',
             'specifications' => 'nullable|array',
             'tags' => 'nullable|array',
+            'variants' => 'nullable|array',
+            'variants.*.name' => 'required_with:variants|string|max:100',
+            'variants.*.color_name' => 'nullable|string|max:100',
+            'variants.*.color_hex' => 'nullable|string|max:50',
+            'variants.*.stock_quantity' => 'nullable|integer|min:0',
+            'variants.*.price_modifier' => 'nullable|numeric|min:0',
         ]);
 
         $product->fill($validated);
@@ -299,6 +333,32 @@ class AdminProductController extends Controller
                     'is_primary' => $imageItems[$idx]['_calculated_primary'],
                     'display_order' => $img['display_order'] ?? $idx,
                 ]);
+            }
+            $wasDirty = true;
+        }
+
+        // Handle Color & Inventory Variants updates
+        if ($request->has('variants')) {
+            $product->variants()->delete();
+            $variantItems = $request->input('variants');
+            if (!empty($variantItems) && is_array($variantItems)) {
+                $totalVariantStock = 0;
+                foreach ($variantItems as $v) {
+                    if (empty($v['name']) && empty($v['color_name'])) continue;
+                    $vStock = (int)($v['stock_quantity'] ?? 0);
+                    $totalVariantStock += $vStock;
+                    $product->variants()->create([
+                        'name' => $v['name'] ?? ($v['color_name'] ?? 'Default Edition'),
+                        'color_name' => $v['color_name'] ?? $v['name'] ?? null,
+                        'color_hex' => $v['color_hex'] ?? null,
+                        'stock_quantity' => $vStock,
+                        'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,
+                        'sku' => $product->sku . '-' . strtoupper(Str::random(4)),
+                    ]);
+                }
+                if ($totalVariantStock > 0 || count($variantItems) > 0) {
+                    $product->update(['stock_quantity' => $totalVariantStock]);
+                }
             }
             $wasDirty = true;
         }

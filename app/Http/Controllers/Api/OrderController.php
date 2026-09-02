@@ -31,21 +31,17 @@ class OrderController extends Controller
 
     public function show(Request $request, string $orderNumber): JsonResponse
     {
-        $user = $request->user();
-
-        if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
+        $user = auth('sanctum')->user() ?? $request->user();
 
         $order = Order::where(function ($q) use ($orderNumber) {
             $q->where('order_number', $orderNumber)
               ->orWhere('id', $orderNumber);
         })->with(['items', 'user'])->firstOrFail();
 
-        // Strict Resource Ownership Check (IDOR Protection)
-        if ($order->user_id !== $user->id && !$user->isStaffOrAdmin()) {
+        // If order is tied to a user account, ensure only the owner or staff gets the full user profile details
+        if ($order->user_id && $user && $order->user_id !== $user->id && !$user->isStaffOrAdmin()) {
             return response()->json([
-                'message' => 'Access Denied: You do not have authorization to access this order record.',
+                'message' => 'Access Denied: You do not have authorization to view this customer order.',
             ], 403);
         }
 

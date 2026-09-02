@@ -58,7 +58,7 @@ class AdminReviewController extends Controller
         if ($product) {
             $approvedReviews = Review::where('product_id', $product->id)->where('is_approved', true);
             $count = $approvedReviews->count();
-            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 5.0;
+            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
             $product->update([
                 'rating_average' => $avg,
                 'review_count' => $count,
@@ -92,7 +92,7 @@ class AdminReviewController extends Controller
         if ($product) {
             $approvedReviews = Review::where('product_id', $product->id)->where('is_approved', true);
             $count = $approvedReviews->count();
-            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 5.0;
+            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
             $product->update([
                 'rating_average' => $avg,
                 'review_count' => $count,
@@ -148,7 +148,7 @@ class AdminReviewController extends Controller
         foreach (array_keys($affectedProductIds) as $pId) {
             $approvedReviews = Review::where('product_id', $pId)->where('is_approved', true);
             $pCount = $approvedReviews->count();
-            $avg = $pCount > 0 ? round($approvedReviews->avg('rating'), 2) : 5.0;
+            $avg = $pCount > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
             Product::where('id', $pId)->update([
                 'rating_average' => $avg,
                 'review_count' => $pCount,

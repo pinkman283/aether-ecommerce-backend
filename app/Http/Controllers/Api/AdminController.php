@@ -150,7 +150,7 @@ class AdminController extends Controller
             'is_new_arrival' => $validated['is_new_arrival'] ?? true,
             'is_best_seller' => $validated['is_best_seller'] ?? false,
             'is_active' => true,
-            'rating_average' => 5.0,
+            'rating_average' => 0.00,
             'review_count' => 0,
         ]);
 

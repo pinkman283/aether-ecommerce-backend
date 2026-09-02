@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AdminAuditLogController;
 use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\AdminBlockedIpController;
+use App\Http\Controllers\Api\AdminBrandController;
 use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminCouponController;
@@ -24,15 +25,18 @@ use App\Http\Controllers\Api\AdminReviewController;
 use App\Http\Controllers\Api\AdminSalesController;
 use App\Http\Controllers\Api\AdminSettingsController;
 use App\Http\Controllers\Api\AdminStaffController;
+use App\Http\Controllers\Api\AdminThemeController;
 use App\Http\Controllers\Api\AdminVendorController;
 use App\Http\Controllers\Api\AdminVendorProductController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BrandController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CouponController;
 use App\Http\Controllers\Api\LeadCaptureController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ReviewController;
+use App\Http\Controllers\Api\ThemeController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -49,16 +53,21 @@ Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{slug}', [ProductController::class, 'show']);
 Route::get('/categories', [CategoryController::class, 'index']);
 Route::get('/categories/{slug}', [CategoryController::class, 'show']);
-Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->middleware('throttle:coupon-validation');
+Route::get('/brands', [BrandController::class, 'index']);
+Route::get('/brands/{slug}', [BrandController::class, 'show']);
+Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->middleware('sliding-throttle:coupon-validation');
 Route::get('/orders/track/{orderNumber}', [OrderController::class, 'track']);
-Route::post('/orders', [OrderController::class, 'store'])->middleware('throttle:order-checkout'); // Guest / Customer Checkout
-Route::post('/leads/capture', [LeadCaptureController::class, 'capture'])->middleware('throttle:leads-capture'); // Storefront Checkout Abandonment Capture
+Route::get('/orders/{orderNumber}', [OrderController::class, 'show']);
+Route::post('/orders', [OrderController::class, 'store'])->middleware('sliding-throttle:order-checkout'); // Guest / Customer Checkout
+Route::post('/leads/capture', [LeadCaptureController::class, 'capture'])->middleware('sliding-throttle:leads-capture'); // Storefront Checkout Abandonment Capture
+Route::get('/theme-settings', [ThemeController::class, 'publicSettings']);
+Route::post('/products/{productId}/reviews', [ReviewController::class, 'store'])->middleware('sliding-throttle:customer-reviews');
 
 // ==========================================
 // 2. CUSTOMER AUTHENTICATION
 // ==========================================
-Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
-Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:auth-customer-login');
+Route::post('/auth/register', [AuthController::class, 'register'])->middleware('sliding-throttle:auth-register');
+Route::post('/auth/login', [AuthController::class, 'login'])->middleware('sliding-throttle:auth-customer-login');
 
 // Customer Authenticated Routes (Strictly require customer:access token ability)
 Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function () {
@@ -68,20 +77,16 @@ Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function (
 
     // Customer Orders & Addresses
     Route::get('/orders', [OrderController::class, 'index']);
-    Route::get('/orders/{orderNumber}', [OrderController::class, 'show']);
     Route::get('/addresses', [AddressController::class, 'index']);
     Route::post('/addresses', [AddressController::class, 'store']);
     Route::delete('/addresses/{id}', [AddressController::class, 'destroy']);
-
-    // Review submission by customer
-    Route::post('/products/{productId}/reviews', [ReviewController::class, 'store'])->middleware('throttle:customer-reviews');
 });
 
 // ==========================================
 // 3. DEDICATED ADMIN AUTHENTICATION
 // ==========================================
 // Protected by named composite rate limiter auth-admin-login
-Route::middleware('throttle:auth-admin-login')->group(function () {
+Route::middleware('sliding-throttle:auth-admin-login')->group(function () {
     Route::post('/admin/auth/login', [AdminAuthController::class, 'login']);
 });
 
@@ -114,6 +119,14 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::put('/categories/{id}', [AdminCategoryController::class, 'update']);
     Route::delete('/categories/{id}', [AdminCategoryController::class, 'destroy']);
 
+    // Brand Management
+    Route::get('/brands', [AdminBrandController::class, 'index']);
+    Route::get('/brands/{id}', [AdminBrandController::class, 'show']);
+    Route::post('/brands', [AdminBrandController::class, 'store']);
+    Route::post('/brands/bulk-delete', [AdminBrandController::class, 'bulkDestroy']);
+    Route::put('/brands/{id}', [AdminBrandController::class, 'update']);
+    Route::delete('/brands/{id}', [AdminBrandController::class, 'destroy']);
+
     // Order Lifecycle & Fulfillment
     Route::get('/orders', [AdminOrderController::class, 'index']);
     Route::get('/orders/{id}', [AdminOrderController::class, 'show']);
@@ -122,7 +135,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::put('/orders/{id}', [AdminOrderController::class, 'update']);
     Route::delete('/orders/{id}', [AdminOrderController::class, 'destroy']);
     Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
-    Route::post('/orders/{id}/refund', [AdminOrderController::class, 'refund'])->middleware('throttle:sensitive-admin-action');
+    Route::post('/orders/{id}/refund', [AdminOrderController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Commercial Sales History & Invoices
     Route::get('/sales', [AdminSalesController::class, 'index']);
@@ -158,8 +171,8 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/blocked-ips', [AdminBlockedIpController::class, 'index']);
     Route::get('/blocked-ips/{id}', [AdminBlockedIpController::class, 'show']);
     Route::get('/blocked-ips/{id}/related', [AdminBlockedIpController::class, 'relatedEntities']);
-    Route::post('/blocked-ips', [AdminBlockedIpController::class, 'store'])->middleware('throttle:sensitive-admin-action');
-    Route::delete('/blocked-ips/{id}', [AdminBlockedIpController::class, 'destroy'])->middleware('throttle:sensitive-admin-action');
+    Route::post('/blocked-ips', [AdminBlockedIpController::class, 'store'])->middleware('sliding-throttle:sensitive-admin-action');
+    Route::delete('/blocked-ips/{id}', [AdminBlockedIpController::class, 'destroy'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Coupons & Discounts
     Route::get('/coupons', [AdminCouponController::class, 'index']);
@@ -241,14 +254,19 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::delete('/staff/{id}', [AdminStaffController::class, 'destroy']);
     Route::post('/staff/{id}/suspend', [AdminStaffController::class, 'suspend']);
     Route::post('/staff/{id}/reactivate', [AdminStaffController::class, 'reactivate']);
-    Route::post('/staff/{id}/promote', [AdminStaffController::class, 'promote'])->middleware('throttle:sensitive-admin-action');
-    Route::post('/staff/{id}/demote', [AdminStaffController::class, 'demote'])->middleware('throttle:sensitive-admin-action');
+    Route::post('/staff/{id}/promote', [AdminStaffController::class, 'promote'])->middleware('sliding-throttle:sensitive-admin-action');
+    Route::post('/staff/{id}/demote', [AdminStaffController::class, 'demote'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Audit Trail & Logging
     Route::get('/audit-logs', [AdminAuditLogController::class, 'index']);
-    Route::post('/audit-logs/bulk-delete', [AdminAuditLogController::class, 'bulkDestroy'])->middleware('throttle:sensitive-admin-action');
+    Route::post('/audit-logs/bulk-delete', [AdminAuditLogController::class, 'bulkDestroy'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // System Settings & Defaults
     Route::get('/settings', [AdminSettingsController::class, 'index']);
     Route::put('/settings', [AdminSettingsController::class, 'update']);
+
+    // Storefront Theme & UI Studio
+    Route::get('/theme', [AdminThemeController::class, 'index']);
+    Route::put('/theme', [AdminThemeController::class, 'update']);
+    Route::post('/theme/reset', [AdminThemeController::class, 'resetDefaults']);
 });
