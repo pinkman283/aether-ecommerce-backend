@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\AdminPosController;
 use App\Http\Controllers\Api\AdminPosRegisterController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminPromotionController;
+use App\Http\Controllers\Api\AdminHomepageSectionController;
 use App\Http\Controllers\Api\AdminPurchaseOrderController;
 use App\Http\Controllers\Api\AdminReportController;
 use App\Http\Controllers\Api\AdminReviewController;
@@ -40,6 +41,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BrandController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CouponController;
+use App\Http\Controllers\Api\HomepageSectionController;
 use App\Http\Controllers\Api\LeadCaptureController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
@@ -80,6 +82,10 @@ Route::post('/products/{productId}/reviews', [ReviewController::class, 'store'])
 // Dynamic Storefront Homepage Promotional Banners
 Route::get('/homepage/banners', [PublicBannerController::class, 'homepage']);
 Route::post('/banners/{id}/click', [PublicBannerController::class, 'trackClick']);
+
+// Dynamic Storefront Homepage Showcase Sections
+Route::get('/homepage/sections', [HomepageSectionController::class, 'index']);
+Route::get('/homepage/sections/{id}/tab-products', [HomepageSectionController::class, 'tabProducts']);
 
 // Public Storefront Colors, Blog & CMS Pages
 Route::get('/colors', function () {
@@ -432,6 +438,18 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/theme', [AdminThemeController::class, 'index']);
     Route::put('/theme', [AdminThemeController::class, 'update']);
     Route::post('/theme/reset', [AdminThemeController::class, 'resetDefaults']);
+
+    // Dynamic Homepage Sections Builder
+    Route::prefix('homepage/sections')->group(function () {
+        Route::get('/', [AdminHomepageSectionController::class, 'index']);
+        Route::post('/', [AdminHomepageSectionController::class, 'store']);
+        Route::post('/reorder', [AdminHomepageSectionController::class, 'reorder']);
+        Route::get('/{id}', [AdminHomepageSectionController::class, 'show']);
+        Route::put('/{id}', [AdminHomepageSectionController::class, 'update']);
+        Route::delete('/{id}', [AdminHomepageSectionController::class, 'destroy']);
+        Route::patch('/{id}/toggle', [AdminHomepageSectionController::class, 'toggle']);
+        Route::post('/{id}/duplicate', [AdminHomepageSectionController::class, 'duplicate']);
+    });
 
     // Blog & Editorial Publishing
     Route::prefix('blog')->group(function () {

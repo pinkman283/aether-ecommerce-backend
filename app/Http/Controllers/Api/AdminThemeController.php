@@ -27,6 +27,7 @@ class AdminThemeController extends Controller
         'theme_btn_secondary_text' => '#ffffff',
         'theme_tab_active_bg' => '#06b6d4',
         'theme_tab_active_text' => '#ffffff',
+        'theme_view_all_color' => '#06b6d4',
         'theme_hover_bg' => 'rgba(6, 182, 212, 0.15)',
         'theme_hover_text' => '#06b6d4',
         'theme_nav_btn_bg' => '#0c101d',
@@ -54,6 +55,7 @@ class AdminThemeController extends Controller
         'split_reveal_mode' => 'every_time',
         'split_reveal_dim' => 0.45,
         'split_reveal_direction' => 'vertical',
+        'deleted_theme_ids' => [],
     ];
 
     /**
@@ -73,6 +75,12 @@ class AdminThemeController extends Controller
             $customThemes = json_decode($customThemes, true) ?: [];
         }
         $settings['custom_themes'] = $customThemes;
+
+        $deletedThemeIds = Setting::get('deleted_theme_ids', []);
+        if (is_string($deletedThemeIds)) {
+            $deletedThemeIds = json_decode($deletedThemeIds, true) ?: [];
+        }
+        $settings['deleted_theme_ids'] = $deletedThemeIds;
 
         return response()->json([
             'settings' => $settings,
@@ -102,6 +110,7 @@ class AdminThemeController extends Controller
             'theme_btn_secondary_text' => 'nullable|string|max:50',
             'theme_tab_active_bg' => 'nullable|string|max:50',
             'theme_tab_active_text' => 'nullable|string|max:50',
+            'theme_view_all_color' => 'nullable|string|max:50',
             'theme_hover_bg' => 'nullable|string|max:80',
             'theme_hover_text' => 'nullable|string|max:50',
             'theme_nav_btn_bg' => 'nullable|string|max:50',
@@ -112,6 +121,10 @@ class AdminThemeController extends Controller
             'announcement_enabled' => 'nullable|boolean',
             'announcement_text' => 'nullable|string|max:500',
             'announcement_badge' => 'nullable|string|max:200',
+            'navbar_promo_enabled' => 'nullable|boolean',
+            'navbar_promo_discount_text' => 'nullable|string|max:50',
+            'navbar_promo_code' => 'nullable|string|max:50',
+            'navbar_promo_link' => 'nullable|string|max:200',
             'store_brand_name' => 'nullable|string|max:100',
             'store_brand_tagline' => 'nullable|string|max:150',
             'store_brand_logo' => 'nullable|string',
@@ -130,6 +143,7 @@ class AdminThemeController extends Controller
             'split_reveal_dim' => 'nullable|numeric|min:0|max:1',
             'split_reveal_direction' => 'nullable|string|in:vertical,horizontal',
             'custom_themes' => 'nullable',
+            'deleted_theme_ids' => 'nullable',
         ]);
 
         $oldValues = [];
@@ -140,6 +154,13 @@ class AdminThemeController extends Controller
                 $oldValues['custom_themes'] = Setting::get('custom_themes', []);
                 Setting::set('custom_themes', is_array($value) ? json_encode($value) : $value, 'theme', 'json', 'Custom Saved Themes');
                 $newValues['custom_themes'] = $value;
+                continue;
+            }
+
+            if ($key === 'deleted_theme_ids') {
+                $oldValues['deleted_theme_ids'] = Setting::get('deleted_theme_ids', []);
+                Setting::set('deleted_theme_ids', is_array($value) ? json_encode($value) : $value, 'theme', 'json', 'Deleted Theme IDs');
+                $newValues['deleted_theme_ids'] = $value;
                 continue;
             }
 
@@ -196,6 +217,12 @@ class AdminThemeController extends Controller
             $customThemes = json_decode($customThemes, true) ?: [];
         }
         $currentSettings['custom_themes'] = $customThemes;
+
+        $deletedThemeIds = Setting::get('deleted_theme_ids', []);
+        if (is_string($deletedThemeIds)) {
+            $deletedThemeIds = json_decode($deletedThemeIds, true) ?: [];
+        }
+        $currentSettings['deleted_theme_ids'] = $deletedThemeIds;
 
         return response()->json([
             'message' => 'Storefront theme and UI settings updated successfully.',

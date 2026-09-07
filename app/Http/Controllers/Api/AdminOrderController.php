@@ -19,7 +19,11 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
 
-        $query = Order::with(['items.product', 'user'])->latest();
+        $query = Order::with(['items.product', 'items.variant', 'user', 'cashierUser', 'posRegisterSession.posRegister'])->latest();
+
+        if ($request->filled('source') && $request->input('source') !== 'all') {
+            $query->where('order_source', $request->input('source'));
+        }
 
         if ($request->filled('search')) {
             $search = $request->input('search');
