@@ -39,6 +39,9 @@ class Order extends Model
         'carrier',
         'notes',
         'coupon_code',
+        'promotion_id',
+        'store_credit_amount',
+        'promotion_discount_details',
         'ip_address',
         'shipped_at',
         'delivered_at',
@@ -53,11 +56,13 @@ class Order extends Model
             'tax_amount' => 'float',
             'shipping_amount' => 'float',
             'discount_amount' => 'float',
+            'store_credit_amount' => 'float',
             'total_amount' => 'float',
             'cogs_amount' => 'float',
             'gross_profit' => 'float',
             'cash_received' => 'float',
             'change_returned' => 'float',
+            'promotion_discount_details' => 'array',
             'shipped_at' => 'datetime',
             'delivered_at' => 'datetime',
         ];
@@ -98,5 +103,15 @@ class Order extends Model
     public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class);
+    }
+
+    public function promotion(): BelongsTo
+    {
+        return $this->belongsTo(Promotion::class);
+    }
+
+    public function redemption(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(PromotionRedemption::class);
     }
 }

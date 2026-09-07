@@ -145,4 +145,24 @@ class User extends Authenticatable
     {
         return $this->hasMany(CustomerIpLog::class);
     }
+
+    public function claims(): HasMany
+    {
+        return $this->hasMany(PromotionClaim::class);
+    }
+
+    public function redemptions(): HasMany
+    {
+        return $this->hasMany(PromotionRedemption::class);
+    }
+
+    public function storeCreditAccount(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(StoreCreditAccount::class);
+    }
+
+    public function storeCreditTransactions(): HasMany
+    {
+        return $this->hasMany(StoreCreditTransaction::class);
+    }
 }

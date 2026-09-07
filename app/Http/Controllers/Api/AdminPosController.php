@@ -164,6 +164,9 @@ class AdminPosController extends Controller
             // 2. Consume FIFO Cost Layers & Compute Real COGS & Gross Profit
             $order = InventoryCostingService::fulfillOrderAndComputeCogs($order);
 
+            // Post Real Double-Entry Sale Journal Entry to General Ledger
+            \App\Services\AccountingService::postOrderSale($order);
+
             // 3. Update Register Session Totals
             if ($validated['payment_method'] === 'cash') {
                 $session->increment('cash_sales_amount', $totalAmount);

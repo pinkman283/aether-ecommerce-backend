@@ -11,6 +11,37 @@ use Illuminate\Http\Request;
 
 class AdminReviewController extends Controller
 {
+    /**
+     * Analytics and moderation overview summary.
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage', 'products.view');
+
+        $total = Review::count();
+        $approved = Review::where('is_approved', true)->count();
+        $pending = Review::where('is_approved', false)->count();
+
+        $approvedReviews = Review::where('is_approved', true);
+        $avgRating = $approved > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
+
+        $ratingDistribution = [
+            5 => Review::where('rating', 5)->count(),
+            4 => Review::where('rating', 4)->count(),
+            3 => Review::where('rating', 3)->count(),
+            2 => Review::where('rating', 2)->count(),
+            1 => Review::where('rating', 1)->count(),
+        ];
+
+        return response()->json([
+            'total_reviews' => $total,
+            'approved_reviews' => $approved,
+            'pending_reviews' => $pending,
+            'average_rating' => $avgRating,
+            'rating_distribution' => $ratingDistribution,
+        ]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $this->checkPermission($request, 'reviews.manage', 'products.view');
@@ -27,7 +58,7 @@ class AdminReviewController extends Controller
         }
 
         if ($request->filled('rating')) {
-            $query->where('rating', $request->input('rating'));
+            $query->where('rating', (int) $request->input('rating'));
         }
 
         if ($request->filled('status')) {
@@ -38,10 +69,93 @@ class AdminReviewController extends Controller
             }
         }
 
-        $perPage = (int) $request->input('per_page', 15);
+        if ($request->filled('product_id')) {
+            $query->where('product_id', $request->input('product_id'));
+        }
+
+        $perPage = min(max((int) $request->input('per_page', 15), 5), 100);
         $reviews = $query->paginate($perPage);
 
         return response()->json($reviews);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $validated = $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'user_name' => 'required|string|max:100',
+            'rating' => 'required|integer|min:1|max:5',
+            'title' => 'nullable|string|max:255',
+            'comment' => 'required|string',
+            'is_verified_purchase' => 'boolean',
+            'is_approved' => 'boolean',
+        ]);
+
+        $review = Review::create([
+            'product_id' => $validated['product_id'],
+            'user_id' => $request->user()->id,
+            'user_name' => trim($validated['user_name']),
+            'rating' => $validated['rating'],
+            'title' => $validated['title'] ?? null,
+            'comment' => $validated['comment'],
+            'is_verified_purchase' => $validated['is_verified_purchase'] ?? true,
+            'is_approved' => $validated['is_approved'] ?? true,
+        ]);
+
+        $this->recalculateProductRating($validated['product_id']);
+
+        AuditLog::log(
+            $request->user(),
+            'review.created',
+            'Review',
+            $review->id,
+            "Created review #{$review->id} for Product #{$review->product_id} by {$review->user_name} (Rating: {$review->rating}/5)",
+            null,
+            $review->toArray()
+        );
+
+        return response()->json([
+            'message' => 'Review created successfully.',
+            'review' => $review->load('product'),
+        ], 201);
+    }
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $review = Review::with('product')->findOrFail($id);
+        $oldValues = $review->toArray();
+
+        $validated = $request->validate([
+            'user_name' => 'required|string|max:100',
+            'rating' => 'required|integer|min:1|max:5',
+            'title' => 'nullable|string|max:255',
+            'comment' => 'required|string',
+            'is_verified_purchase' => 'boolean',
+            'is_approved' => 'boolean',
+        ]);
+
+        $review->update($validated);
+
+        $this->recalculateProductRating($review->product_id);
+
+        AuditLog::log(
+            $request->user(),
+            'review.updated',
+            'Review',
+            $review->id,
+            "Updated review #{$review->id} for Product #{$review->product_id}",
+            $oldValues,
+            $review->toArray()
+        );
+
+        return response()->json([
+            'message' => 'Review updated successfully.',
+            'review' => $review->fresh('product'),
+        ]);
     }
 
     public function toggleApproval(Request $request, int $id): JsonResponse
@@ -52,25 +166,14 @@ class AdminReviewController extends Controller
         $newStatus = !$review->is_approved;
 
         $review->update(['is_approved' => $newStatus]);
-
-        // Recalculate product rating average
-        $product = $review->product;
-        if ($product) {
-            $approvedReviews = Review::where('product_id', $product->id)->where('is_approved', true);
-            $count = $approvedReviews->count();
-            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
-            $product->update([
-                'rating_average' => $avg,
-                'review_count' => $count,
-            ]);
-        }
+        $this->recalculateProductRating($review->product_id);
 
         AuditLog::log(
             $request->user(),
             'review.moderated',
             'Review',
             $review->id,
-            "Review #{$review->id} for '{$product?->name}' by {$review->user_name} marked as " . ($newStatus ? 'approved' : 'rejected') . "."
+            "Review #{$review->id} for '{$review->product?->name}' by {$review->user_name} marked as " . ($newStatus ? 'approved' : 'hidden') . "."
         );
 
         return response()->json([
@@ -79,32 +182,65 @@ class AdminReviewController extends Controller
         ]);
     }
 
+    public function bulkApprove(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:reviews,id',
+        ]);
+
+        Review::whereIn('id', $validated['ids'])->update(['is_approved' => true]);
+
+        $affectedProductIds = Review::whereIn('id', $validated['ids'])->pluck('product_id')->unique();
+        foreach ($affectedProductIds as $pId) {
+            $this->recalculateProductRating($pId);
+        }
+
+        return response()->json([
+            'message' => "Approved " . count($validated['ids']) . " review(s).",
+        ]);
+    }
+
+    public function bulkReject(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|exists:reviews,id',
+        ]);
+
+        Review::whereIn('id', $validated['ids'])->update(['is_approved' => false]);
+
+        $affectedProductIds = Review::whereIn('id', $validated['ids'])->pluck('product_id')->unique();
+        foreach ($affectedProductIds as $pId) {
+            $this->recalculateProductRating($pId);
+        }
+
+        return response()->json([
+            'message' => "Marked " . count($validated['ids']) . " review(s) as pending/hidden.",
+        ]);
+    }
+
     public function destroy(Request $request, int $id): JsonResponse
     {
         $this->checkPermission($request, 'reviews.manage');
 
         $review = Review::with('product')->findOrFail($id);
-        $product = $review->product;
+        $productId = $review->product_id;
         $author = $review->user_name;
 
         $review->delete();
-
-        if ($product) {
-            $approvedReviews = Review::where('product_id', $product->id)->where('is_approved', true);
-            $count = $approvedReviews->count();
-            $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
-            $product->update([
-                'rating_average' => $avg,
-                'review_count' => $count,
-            ]);
-        }
+        $this->recalculateProductRating($productId);
 
         AuditLog::log(
             $request->user(),
             'review.deleted',
             'Review',
             $id,
-            "Deleted review #{$id} by {$author} on '{$product?->name}'."
+            "Deleted review #{$id} by {$author}."
         );
 
         return response()->json(['message' => 'Review deleted successfully.']);
@@ -119,45 +255,29 @@ class AdminReviewController extends Controller
             'ids.*' => 'integer|exists:reviews,id',
         ]);
 
-        $count = 0;
-        $affectedProductIds = [];
+        $affectedProductIds = Review::whereIn('id', $validated['ids'])->pluck('product_id')->unique();
+        Review::whereIn('id', $validated['ids'])->delete();
 
-        foreach ($validated['ids'] as $id) {
-            $review = Review::find($id);
-            if ($review) {
-                $productId = $review->product_id;
-                $author = $review->user_name;
-                $review->delete();
-                $count++;
-
-                if ($productId) {
-                    $affectedProductIds[$productId] = true;
-                }
-
-                AuditLog::log(
-                    $request->user(),
-                    'review.deleted',
-                    'Review',
-                    $id,
-                    "Bulk deleted review #{$id} by {$author}."
-                );
-            }
-        }
-
-        // Recalculate ratings for affected products
-        foreach (array_keys($affectedProductIds) as $pId) {
-            $approvedReviews = Review::where('product_id', $pId)->where('is_approved', true);
-            $pCount = $approvedReviews->count();
-            $avg = $pCount > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
-            Product::where('id', $pId)->update([
-                'rating_average' => $avg,
-                'review_count' => $pCount,
-            ]);
+        foreach ($affectedProductIds as $pId) {
+            $this->recalculateProductRating($pId);
         }
 
         return response()->json([
-            'message' => "Successfully deleted {$count} review(s).",
-            'deleted_count' => $count,
+            'message' => "Successfully deleted " . count($validated['ids']) . " review(s).",
+        ]);
+    }
+
+    private function recalculateProductRating(?int $productId): void
+    {
+        if (!$productId) return;
+
+        $approvedReviews = Review::where('product_id', $productId)->where('is_approved', true);
+        $count = $approvedReviews->count();
+        $avg = $count > 0 ? round($approvedReviews->avg('rating'), 2) : 0.00;
+
+        Product::where('id', $productId)->update([
+            'rating_average' => $avg,
+            'review_count' => $count,
         ]);
     }
 }

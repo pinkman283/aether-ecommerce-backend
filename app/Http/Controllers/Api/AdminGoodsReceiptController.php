@@ -166,8 +166,10 @@ class AdminGoodsReceiptController extends Controller
                 'goods_receipt.created',
                 'GoodsReceipt',
                 $receipt->id,
-                "Received shipment GRN #{$receipt->receipt_number} for PO #{$po->po_number} ({$totalReceivedInBatch} units accepted into FIFO inventory layers). PO Status is now {$newPoStatus}."
             );
+
+            // Post Real Double-Entry General Ledger Entry (Debit Inventory, Credit A/P)
+            \App\Services\AccountingService::postGoodsReceipt($receipt->load('items', 'vendor', 'purchaseOrder'));
 
             return response()->json([
                 'message' => "Goods receipt note {$receipt->receipt_number} processed successfully.",

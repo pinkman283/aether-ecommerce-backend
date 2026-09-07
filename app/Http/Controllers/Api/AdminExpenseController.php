@@ -97,6 +97,9 @@ class AdminExpenseController extends Controller
             'created_by_user_id' => $request->user()->id,
         ]));
 
+        // Post Real Double-Entry General Ledger Entry
+        \App\Services\AccountingService::postExpense($expense);
+
         AuditLog::log(
             $request->user(),
             'expense.recorded',

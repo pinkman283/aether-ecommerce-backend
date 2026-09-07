@@ -9,6 +9,8 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use App\Services\PromotionEngine;
+use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -106,6 +108,9 @@ class OrderController extends Controller
             'billing_address' => 'nullable|array',
             'payment_method' => 'required|in:credit_card,cash_on_delivery,paypal,apple_pay',
             'coupon_code' => 'nullable|string',
+            'claimed_coupon_id' => 'nullable|integer',
+            'use_store_credit' => 'nullable|boolean',
+            'store_credit_amount' => 'nullable|numeric|min:0',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.variant_id' => 'nullable|exists:product_variants,id',
@@ -200,32 +205,30 @@ class OrderController extends Controller
                 ];
             }
 
-            // Server-side authoritative coupon calculation
-            $discount = 0.00;
-            if (!empty($validated['coupon_code'])) {
-                $coupon = Coupon::where('code', strtoupper($validated['coupon_code']))
-                    ->where('is_active', true)
-                    ->where('starts_at', '<=', now())
-                    ->where('expires_at', '>=', now())
-                    ->first();
+            // Authoritative server-side PromotionEngine evaluation
+            $baseShipping = $subtotal >= 100 ? 0.00 : 15.00;
+            $eval = PromotionEngine::evaluateCart(
+                $validated['items'],
+                $customerRecord,
+                $validated['customer_email'],
+                $validated['coupon_code'] ?? null,
+                $validated['claimed_coupon_id'] ?? null,
+                $baseShipping,
+                $validated['payment_method']
+            );
 
-                if ($coupon && $subtotal >= (float) $coupon->min_order_amount) {
-                    if ($coupon->discount_type === 'percentage') {
-                        $discount = round(($subtotal * (float) $coupon->discount_value) / 100, 2);
-                        if ($coupon->max_discount_amount && $discount > (float) $coupon->max_discount_amount) {
-                            $discount = (float) $coupon->max_discount_amount;
-                        }
-                    } else {
-                        $discount = min($subtotal, (float) $coupon->discount_value);
-                    }
-                }
+            // If customer explicitly entered a coupon code or claim that is invalid, reject
+            if ((!empty($validated['coupon_code']) || !empty($validated['claimed_coupon_id'])) && !$eval['valid']) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'coupon_code' => [$eval['message'] ?: 'Provided promo code or claimed coupon is not valid for this order.'],
+                ]);
             }
 
-            // Authoritative server-side shipping, tax, and total calculation
-            $shipping = $subtotal >= 100 ? 0.00 : 15.00;
-            $taxable = max(0, $subtotal - $discount);
-            $tax = round($taxable * 0.08, 2);
-            $total = round($taxable + $shipping + $tax, 2);
+            $discount = $eval['order_discount'];
+            $shipping = $eval['shipping_amount'];
+            $tax = $eval['tax_amount'];
+            $total = $eval['grand_total'];
+            $primaryPromoId = $eval['applied_promotions'][0]['promotion_id'] ?? null;
 
             $orderNumber = 'ORD-' . date('Y') . '-' . strtoupper(Str::random(6));
 
@@ -242,6 +245,7 @@ class OrderController extends Controller
                 'tax_amount' => $tax,
                 'shipping_amount' => $shipping,
                 'discount_amount' => $discount,
+                'store_credit_amount' => 0.00,
                 'total_amount' => $total,
                 'payment_status' => $validated['payment_method'] === 'cash_on_delivery' ? 'pending' : 'paid',
                 'payment_method' => $validated['payment_method'],
@@ -250,8 +254,19 @@ class OrderController extends Controller
                 'tracking_code' => 'TRK-' . date('md') . strtoupper(Str::random(6)),
                 'carrier' => 'DHL Express Cyber Priority',
                 'coupon_code' => $validated['coupon_code'] ?? null,
+                'promotion_id' => $primaryPromoId,
+                'promotion_discount_details' => $eval['applied_promotions'],
                 'ip_address' => $clientIp,
             ]);
+
+            // If customer requested store credit application, deduct atomically
+            if (!empty($validated['use_store_credit'])) {
+                $requestedCredit = (float) ($validated['store_credit_amount'] ?? $total);
+                StoreCreditService::applyToOrder($order, $requestedCredit, $customerRecord);
+            }
+
+            // Record authoritative promotion redemption audit records
+            PromotionEngine::recordOrderRedemption($order, $eval, $customerRecord, $validated['customer_email']);
 
             foreach ($itemsToCreate as $item) {
                 $order->items()->create($item);
@@ -262,6 +277,9 @@ class OrderController extends Controller
 
             // Execute FIFO Costing Layer Consumption & Compute COGS
             $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
+
+            // Post Real Double-Entry Sale Journal Entry to General Ledger
+            \App\Services\AccountingService::postOrderSale($order);
 
             // Update risk score
             \App\Services\CustomerRiskService::calculateCustomerRisk($customerRecord);

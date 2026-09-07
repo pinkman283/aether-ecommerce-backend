@@ -617,5 +617,8 @@ class DatabaseSeeder extends Seeder
             null,
             ['price' => $firstProduct->price, 'stock' => $firstProduct->stock_quantity]
         );
+
+        // 9. Accounting & Chart of Accounts
+        $this->call(ChartOfAccountsSeeder::class);
     }
 }

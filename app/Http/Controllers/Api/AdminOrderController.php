@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\User;
+use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -347,6 +348,9 @@ class AdminOrderController extends Controller
                 }
             }
         }
+
+        // Restore store credit if order utilized store credit
+        StoreCreditService::refundOrderCredit($order, $validated['reason']);
 
         AuditLog::log(
             $request->user(),

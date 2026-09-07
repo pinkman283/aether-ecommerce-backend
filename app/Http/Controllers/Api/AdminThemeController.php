@@ -7,6 +7,8 @@ use App\Models\AuditLog;
 use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class AdminThemeController extends Controller
 {
@@ -29,6 +31,8 @@ class AdminThemeController extends Controller
         'theme_hover_text' => '#06b6d4',
         'theme_nav_btn_bg' => '#0c101d',
         'theme_nav_btn_color' => '#ffffff',
+        'theme_footer_bg_color' => '#1f242e',
+        'theme_footer_text_color' => '#94a3b8',
         'theme_radius' => 'rounded-lg',
         'announcement_enabled' => true,
         'announcement_text' => 'Free Express Shipping on orders over $100 • Code: WELCOME20 (-20%)',
@@ -102,6 +106,8 @@ class AdminThemeController extends Controller
             'theme_hover_text' => 'nullable|string|max:50',
             'theme_nav_btn_bg' => 'nullable|string|max:50',
             'theme_nav_btn_color' => 'nullable|string|max:50',
+            'theme_footer_bg_color' => 'nullable|string|max:50',
+            'theme_footer_text_color' => 'nullable|string|max:50',
             'theme_radius' => 'nullable|string|in:rounded-none,rounded-md,rounded-lg,rounded-xl,rounded-2xl',
             'announcement_enabled' => 'nullable|boolean',
             'announcement_text' => 'nullable|string|max:500',
@@ -137,13 +143,37 @@ class AdminThemeController extends Controller
                 continue;
             }
 
-            if ($value !== null) {
+            if ($request->has($key)) {
                 $oldValues[$key] = Setting::get($key, $this->defaults[$key] ?? null);
                 
-                $type = is_bool($value) ? 'boolean' : (is_numeric($value) ? 'number' : 'string');
-                Setting::set($key, $value, 'theme', $type, ucwords(str_replace('_', ' ', $key)));
+                $valToSave = $value ?? '';
+                // If an image was submitted as a Base64 Data URL, persist to disk for ultra-fast serving & SSR hydration safety
+                if (is_string($valToSave) && preg_match('/^data:image\/(\w+);base64,/', $valToSave, $matches)) {
+                    $ext = strtolower($matches[1]);
+                    if ($ext === 'jpeg') $ext = 'jpg';
+                    $data = base64_decode(substr($valToSave, strpos($valToSave, ',') + 1));
+                    $filename = 'branding_' . Str::slug($key) . '_' . time() . '.' . $ext;
+                    Storage::disk('public')->put('branding/' . $filename, $data);
+                    $valToSave = url('storage/branding/' . $filename);
+                }
+
+                $type = is_bool($valToSave) ? 'boolean' : (is_numeric($valToSave) ? 'number' : 'string');
+                Setting::set($key, $valToSave, 'theme', $type, ucwords(str_replace('_', ' ', $key)));
                 
-                $newValues[$key] = $value;
+                $newValues[$key] = $valToSave;
+            }
+        }
+
+        // When store_brand_name is updated, synchronize store_name and split_reveal_title across the site
+        if (isset($newValues['store_brand_name']) && !empty($newValues['store_brand_name'])) {
+            $brand = $newValues['store_brand_name'];
+            Setting::set('store_name', $brand, 'general', 'string', 'Store Name');
+
+            $currentSplitTitle = Setting::get('split_reveal_title', 'AETHER');
+            $oldBrandName = $oldValues['store_brand_name'] ?? 'AETHER';
+            if (!isset($newValues['split_reveal_title']) || $newValues['split_reveal_title'] === 'AETHER' || $newValues['split_reveal_title'] === $oldBrandName) {
+                Setting::set('split_reveal_title', $brand, 'theme', 'string', 'Split Reveal Title');
+                $newValues['split_reveal_title'] = $brand;
             }
         }
 

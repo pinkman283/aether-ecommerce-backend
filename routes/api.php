@@ -1,26 +1,34 @@
 <?php
 
 use App\Http\Controllers\Api\AddressController;
+use App\Http\Controllers\Api\AdminAccountingController;
 use App\Http\Controllers\Api\AdminAuditLogController;
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminBlockedIpController;
+use App\Http\Controllers\Api\AdminBlogController;
 use App\Http\Controllers\Api\AdminBrandController;
 use App\Http\Controllers\Api\AdminCategoryController;
+use App\Http\Controllers\Api\AdminColorController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AdminCouponController;
 use App\Http\Controllers\Api\AdminCustomerController;
 use App\Http\Controllers\Api\AdminExpenseController;
 use App\Http\Controllers\Api\AdminFinanceController;
 use App\Http\Controllers\Api\AdminGoodsReceiptController;
+use App\Http\Controllers\Api\AdminIntegrationController;
 use App\Http\Controllers\Api\AdminInventoryController;
 use App\Http\Controllers\Api\AdminInventoryMovementController;
 use App\Http\Controllers\Api\AdminInventoryValuationController;
 use App\Http\Controllers\Api\AdminLeadController;
+use App\Http\Controllers\Api\AdminOnlineStoreController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminPosController;
 use App\Http\Controllers\Api\AdminPosRegisterController;
 use App\Http\Controllers\Api\AdminProductController;
+use App\Http\Controllers\Api\AdminPromotionController;
 use App\Http\Controllers\Api\AdminPurchaseOrderController;
+use App\Http\Controllers\Api\AdminReportController;
 use App\Http\Controllers\Api\AdminReviewController;
 use App\Http\Controllers\Api\AdminSalesController;
 use App\Http\Controllers\Api\AdminSettingsController;
@@ -35,6 +43,8 @@ use App\Http\Controllers\Api\CouponController;
 use App\Http\Controllers\Api\LeadCaptureController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\PromotionController;
+use App\Http\Controllers\Api\PublicBannerController;
 use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\ThemeController;
 use Illuminate\Support\Facades\Route;
@@ -56,12 +66,78 @@ Route::get('/categories/{slug}', [CategoryController::class, 'show']);
 Route::get('/brands', [BrandController::class, 'index']);
 Route::get('/brands/{slug}', [BrandController::class, 'show']);
 Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->middleware('sliding-throttle:coupon-validation');
+Route::post('/promotions/evaluate', [PromotionController::class, 'evaluate']);
+Route::get('/promotions/claimable', [PromotionController::class, 'claimable']);
 Route::get('/orders/track/{orderNumber}', [OrderController::class, 'track']);
 Route::get('/orders/{orderNumber}', [OrderController::class, 'show']);
 Route::post('/orders', [OrderController::class, 'store'])->middleware('sliding-throttle:order-checkout'); // Guest / Customer Checkout
 Route::post('/leads/capture', [LeadCaptureController::class, 'capture'])->middleware('sliding-throttle:leads-capture'); // Storefront Checkout Abandonment Capture
 Route::get('/theme-settings', [ThemeController::class, 'publicSettings']);
+Route::get('/sitemap.xml', [AdminSettingsController::class, 'sitemapXml']);
+Route::get('/integrations/tracking', [AdminSettingsController::class, 'publicTrackingScripts']);
 Route::post('/products/{productId}/reviews', [ReviewController::class, 'store'])->middleware('sliding-throttle:customer-reviews');
+
+// Dynamic Storefront Homepage Promotional Banners
+Route::get('/homepage/banners', [PublicBannerController::class, 'homepage']);
+Route::post('/banners/{id}/click', [PublicBannerController::class, 'trackClick']);
+
+// Public Storefront Colors, Blog & CMS Pages
+Route::get('/colors', function () {
+    return response()->json(\App\Models\Color::where('status', 'active')->orderBy('name')->get());
+});
+Route::get('/blog/posts', function (\Illuminate\Http\Request $request) {
+    $q = \App\Models\BlogPost::where('status', 'published')->with(['category', 'tags', 'author:id,name']);
+    if ($request->filled('category')) {
+        $q->whereHas('category', fn($c) => $c->where('slug', $request->input('category')));
+    }
+    if ($request->filled('tag')) {
+        $q->whereHas('tags', fn($t) => $t->where('slug', $request->input('tag')));
+    }
+    return response()->json($q->latest('published_at')->paginate(12));
+});
+Route::get('/blog/posts/{slug}', function (string $slug) {
+    $post = \App\Models\BlogPost::where('slug', $slug)
+        ->where('status', 'published')
+        ->with(['category', 'tags', 'author:id,name', 'comments' => fn($c) => $c->where('status', 'approved')->latest()])
+        ->firstOrFail();
+    $post->increment('views_count');
+    return response()->json($post);
+});
+Route::post('/blog/posts/{id}/comments', function (\Illuminate\Http\Request $request, int $id) {
+    $validated = $request->validate([
+        'author_name' => 'required|string|max:100',
+        'author_email' => 'required|email|max:150',
+        'comment' => 'required|string|max:2000',
+    ]);
+    $comment = \App\Models\BlogComment::create([
+        'post_id' => $id,
+        'author_name' => $validated['author_name'],
+        'author_email' => $validated['author_email'],
+        'comment' => $validated['comment'],
+        'is_approved' => false,
+    ]);
+    return response()->json(['message' => 'Comment submitted for moderation.', 'comment' => $comment], 201);
+})->middleware('sliding-throttle:customer-reviews');
+Route::get('/pages/{slug}', function (string $slug) {
+    return response()->json(\App\Models\CmsPage::where('slug', $slug)->where('is_active', true)->firstOrFail());
+});
+Route::get('/store-navigation', function () {
+    return response()->json([
+        'footer_links' => \App\Models\FooterLink::where('is_active', true)->orderBy('sort_order')->get()->groupBy('column_group'),
+        'social_links' => \App\Models\SocialLink::where('is_active', true)->orderBy('sort_order')->get(),
+    ]);
+});
+Route::get('/banners', function (\Illuminate\Http\Request $request) {
+    $q = \App\Models\Banner::where('is_active', true);
+    if ($request->filled('placement')) {
+        $q->where('placement', $request->input('placement'));
+    }
+    return response()->json($q->orderBy('sort_order')->get());
+});
+Route::post('/banners/{id}/click', function (int $id) {
+    \App\Models\Banner::where('id', $id)->increment('clicks_count');
+    return response()->json(['success' => true]);
+});
 
 // ==========================================
 // 2. CUSTOMER AUTHENTICATION
@@ -80,6 +156,11 @@ Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function (
     Route::get('/addresses', [AddressController::class, 'index']);
     Route::post('/addresses', [AddressController::class, 'store']);
     Route::delete('/addresses/{id}', [AddressController::class, 'destroy']);
+
+    // Customer Promotions, Coupons & Store Credit Wallet
+    Route::post('/promotions/claim', [PromotionController::class, 'claim']);
+    Route::get('/promotions/my-coupons', [PromotionController::class, 'myCoupons']);
+    Route::get('/promotions/store-credit', [PromotionController::class, 'storeCredit']);
 });
 
 // ==========================================
@@ -126,6 +207,13 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::post('/brands/bulk-delete', [AdminBrandController::class, 'bulkDestroy']);
     Route::put('/brands/{id}', [AdminBrandController::class, 'update']);
     Route::delete('/brands/{id}', [AdminBrandController::class, 'destroy']);
+
+    // Color Swatch Management
+    Route::get('/colors', [AdminColorController::class, 'index']);
+    Route::post('/colors', [AdminColorController::class, 'store']);
+    Route::put('/colors/{id}', [AdminColorController::class, 'update']);
+    Route::patch('/colors/{id}/status', [AdminColorController::class, 'toggleStatus']);
+    Route::delete('/colors/{id}', [AdminColorController::class, 'destroy']);
 
     // Order Lifecycle & Fulfillment
     Route::get('/orders', [AdminOrderController::class, 'index']);
@@ -174,7 +262,29 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::post('/blocked-ips', [AdminBlockedIpController::class, 'store'])->middleware('sliding-throttle:sensitive-admin-action');
     Route::delete('/blocked-ips/{id}', [AdminBlockedIpController::class, 'destroy'])->middleware('sliding-throttle:sensitive-admin-action');
 
-    // Coupons & Discounts
+    // Enterprise Promotions & Discounts Suite
+    Route::prefix('promotions')->group(function () {
+        Route::get('/analytics', [AdminPromotionController::class, 'analytics']);
+        Route::get('/codes', [AdminPromotionController::class, 'codes']);
+        Route::get('/claims', [AdminPromotionController::class, 'claims']);
+        Route::get('/redemptions', [AdminPromotionController::class, 'redemptions']);
+        Route::post('/customer-rewards', [AdminPromotionController::class, 'issueCustomerReward']);
+        Route::get('/store-credit', [AdminPromotionController::class, 'storeCreditAccounts']);
+        Route::get('/store-credit/accounts', [AdminPromotionController::class, 'storeCreditAccounts']);
+        Route::post('/store-credit/adjust', [AdminPromotionController::class, 'adjustStoreCredit']);
+        Route::get('/store-credit/ledger', [AdminPromotionController::class, 'storeCreditLedger']);
+        Route::get('/store-credit/{userId}/ledger', [AdminPromotionController::class, 'storeCreditLedger'])->whereNumber('userId');
+        Route::get('/', [AdminPromotionController::class, 'index']);
+        Route::post('/', [AdminPromotionController::class, 'store']);
+        Route::get('/{id}', [AdminPromotionController::class, 'show'])->whereNumber('id');
+        Route::put('/{id}', [AdminPromotionController::class, 'update'])->whereNumber('id');
+        Route::delete('/{id}', [AdminPromotionController::class, 'destroy'])->whereNumber('id');
+        Route::patch('/{id}/status', [AdminPromotionController::class, 'toggleStatus'])->whereNumber('id');
+        Route::post('/{id}/codes', [AdminPromotionController::class, 'generateCodes'])->whereNumber('id');
+        Route::post('/{id}/generate-codes', [AdminPromotionController::class, 'generateCodes'])->whereNumber('id');
+    });
+
+    // Legacy Coupons (Preserved for 100% backward compatibility)
     Route::get('/coupons', [AdminCouponController::class, 'index']);
     Route::post('/coupons', [AdminCouponController::class, 'store']);
     Route::post('/coupons/bulk-delete', [AdminCouponController::class, 'bulkDestroy']);
@@ -240,11 +350,45 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/finance/drilldown', [AdminFinanceController::class, 'drilldown']);
     Route::get('/finance/export', [AdminFinanceController::class, 'export']);
 
-    // Review Moderation Queue
+    // ==========================================
+    // Accounting & Double-Entry Financial Engine
+    // ==========================================
+    Route::prefix('accounting')->group(function () {
+        Route::get('/overview', [AdminAccountingController::class, 'overview']);
+        Route::get('/accounts', [AdminAccountingController::class, 'accounts']);
+        Route::post('/accounts', [AdminAccountingController::class, 'storeAccount']);
+        Route::get('/ledger', [AdminAccountingController::class, 'ledger']);
+        Route::post('/ledger/journal-entry', [AdminAccountingController::class, 'createJournalEntry']);
+        Route::get('/receivables', [AdminAccountingController::class, 'receivables']);
+        Route::post('/receivables/payment', [AdminAccountingController::class, 'recordCustomerPayment']);
+        Route::get('/payables', [AdminAccountingController::class, 'payables']);
+        Route::post('/payables/payment', [AdminAccountingController::class, 'recordSupplierPayment']);
+        Route::get('/banking', [AdminAccountingController::class, 'banking']);
+        Route::post('/banking/transfer', [AdminAccountingController::class, 'transfer']);
+        Route::get('/reports', [AdminAccountingController::class, 'reports']);
+        Route::get('/export', [AdminAccountingController::class, 'export']);
+    });
+
+    // Review Moderation & Management
+    Route::get('/reviews/summary', [AdminReviewController::class, 'summary']);
     Route::get('/reviews', [AdminReviewController::class, 'index']);
+    Route::post('/reviews', [AdminReviewController::class, 'store']);
+    Route::put('/reviews/{id}', [AdminReviewController::class, 'update']);
     Route::post('/reviews/bulk-delete', [AdminReviewController::class, 'bulkDestroy']);
+    Route::post('/reviews/bulk-approve', [AdminReviewController::class, 'bulkApprove']);
+    Route::post('/reviews/bulk-reject', [AdminReviewController::class, 'bulkReject']);
     Route::patch('/reviews/{id}/approval', [AdminReviewController::class, 'toggleApproval']);
     Route::delete('/reviews/{id}', [AdminReviewController::class, 'destroy']);
+
+    // Banners & Promotional Campaigns
+    Route::get('/banners', [AdminBannerController::class, 'index']);
+    Route::get('/banners/{id}', [AdminBannerController::class, 'show']);
+    Route::post('/banners', [AdminBannerController::class, 'store']);
+    Route::post('/banners/upload-image', [AdminBannerController::class, 'uploadImage']);
+    Route::post('/banners/reorder', [AdminBannerController::class, 'reorder']);
+    Route::put('/banners/{id}', [AdminBannerController::class, 'update']);
+    Route::patch('/banners/{id}/status', [AdminBannerController::class, 'toggleStatus']);
+    Route::delete('/banners/{id}', [AdminBannerController::class, 'destroy']);
 
     // Staff & Access Control (Super Admin / Admin)
     Route::get('/staff', [AdminStaffController::class, 'index']);
@@ -264,9 +408,73 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     // System Settings & Defaults
     Route::get('/settings', [AdminSettingsController::class, 'index']);
     Route::put('/settings', [AdminSettingsController::class, 'update']);
+    Route::get('/settings/extended', [AdminSettingsController::class, 'getExtendedSettings']);
+    Route::put('/settings/group/{group}', [AdminSettingsController::class, 'updateGroup']);
+    Route::post('/system/cache-clear', [AdminSettingsController::class, 'clearCache']);
+    Route::post('/system/sitemap/generate', [AdminSettingsController::class, 'generateSitemap']);
+
+    // Third-Party Integrations Hub
+    Route::prefix('integrations')->group(function () {
+        Route::get('/', [AdminIntegrationController::class, 'index']);
+        Route::get('/{provider}', [AdminIntegrationController::class, 'show']);
+        Route::put('/{provider}', [AdminIntegrationController::class, 'update']);
+        Route::post('/{provider}/toggle', [AdminIntegrationController::class, 'toggle']);
+        Route::post('/{provider}/test', [AdminIntegrationController::class, 'test']);
+    });
+
+    // 14 Specialized Business Intelligence Reports
+    Route::prefix('reports')->group(function () {
+        Route::get('/{type}', [AdminReportController::class, 'show']);
+        Route::get('/{type}/export', [AdminReportController::class, 'exportCsv']);
+    });
 
     // Storefront Theme & UI Studio
     Route::get('/theme', [AdminThemeController::class, 'index']);
     Route::put('/theme', [AdminThemeController::class, 'update']);
     Route::post('/theme/reset', [AdminThemeController::class, 'resetDefaults']);
+
+    // Blog & Editorial Publishing
+    Route::prefix('blog')->group(function () {
+        Route::get('/summary', [AdminBlogController::class, 'summary']);
+        Route::get('/posts', [AdminBlogController::class, 'posts']);
+        Route::get('/posts/{id}', [AdminBlogController::class, 'showPost']);
+        Route::post('/posts', [AdminBlogController::class, 'storePost']);
+        Route::put('/posts/{id}', [AdminBlogController::class, 'updatePost']);
+        Route::patch('/posts/{id}/status', [AdminBlogController::class, 'togglePostStatus']);
+        Route::delete('/posts/{id}', [AdminBlogController::class, 'destroyPost']);
+
+        Route::get('/categories', [AdminBlogController::class, 'categories']);
+        Route::post('/categories', [AdminBlogController::class, 'storeCategory']);
+        Route::put('/categories/{id}', [AdminBlogController::class, 'updateCategory']);
+        Route::delete('/categories/{id}', [AdminBlogController::class, 'destroyCategory']);
+
+        Route::get('/tags', [AdminBlogController::class, 'tags']);
+        Route::post('/tags', [AdminBlogController::class, 'storeTag']);
+        Route::put('/tags/{id}', [AdminBlogController::class, 'updateTag']);
+        Route::delete('/tags/{id}', [AdminBlogController::class, 'destroyTag']);
+
+        Route::get('/comments', [AdminBlogController::class, 'comments']);
+        Route::patch('/comments/{id}/approval', [AdminBlogController::class, 'toggleCommentApproval']);
+        Route::delete('/comments/{id}', [AdminBlogController::class, 'destroyComment']);
+    });
+
+    // Online Store CMS & Content Architecture
+    Route::prefix('online-store')->group(function () {
+        Route::get('/pages', [AdminOnlineStoreController::class, 'pages']);
+        Route::get('/pages/{id}', [AdminOnlineStoreController::class, 'showPage']);
+        Route::post('/pages', [AdminOnlineStoreController::class, 'storePage']);
+        Route::put('/pages/{id}', [AdminOnlineStoreController::class, 'updatePage']);
+        Route::patch('/pages/{id}/status', [AdminOnlineStoreController::class, 'togglePageStatus']);
+        Route::delete('/pages/{id}', [AdminOnlineStoreController::class, 'destroyPage']);
+
+        Route::get('/footer-links', [AdminOnlineStoreController::class, 'footerLinks']);
+        Route::post('/footer-links', [AdminOnlineStoreController::class, 'storeFooterLink']);
+        Route::put('/footer-links/{id}', [AdminOnlineStoreController::class, 'updateFooterLink']);
+        Route::delete('/footer-links/{id}', [AdminOnlineStoreController::class, 'destroyFooterLink']);
+
+        Route::get('/social-links', [AdminOnlineStoreController::class, 'socialLinks']);
+        Route::post('/social-links', [AdminOnlineStoreController::class, 'storeSocialLink']);
+        Route::put('/social-links/{id}', [AdminOnlineStoreController::class, 'updateSocialLink']);
+        Route::delete('/social-links/{id}', [AdminOnlineStoreController::class, 'destroySocialLink']);
+    });
 });
