@@ -175,10 +175,18 @@ class ProductController extends Controller
             ->take(6)
             ->get();
 
-        $featuredCategories = Category::where('is_featured', true)
+        $featuredCategories = Category::whereNull('parent_id')
+            ->where('is_featured', true)
             ->withCount('products')
             ->orderBy('display_order')
             ->get();
+
+        if ($featuredCategories->isEmpty()) {
+            $featuredCategories = Category::whereNull('parent_id')
+                ->withCount('products')
+                ->orderBy('display_order')
+                ->get();
+        }
 
         return response()->json([
             'featured_products' => $featuredProducts,

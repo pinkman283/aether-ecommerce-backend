@@ -55,6 +55,13 @@ class AdminThemeController extends Controller
         'split_reveal_mode' => 'every_time',
         'split_reveal_dim' => 0.45,
         'split_reveal_direction' => 'vertical',
+        'nav_deals_enabled' => true,
+        'nav_deals_text' => 'Deals',
+        'nav_deals_link' => '/products?discounted=true',
+        'category_deals_card_enabled' => true,
+        'category_deals_card_title' => 'Top Deals',
+        'category_deals_card_subtitle' => 'Up to 20% Off',
+        'category_deals_card_link' => '/products?discounted=true',
         'deleted_theme_ids' => [],
     ];
 
@@ -142,6 +149,13 @@ class AdminThemeController extends Controller
             'split_reveal_mode' => 'nullable|string|in:every_time,once_per_session',
             'split_reveal_dim' => 'nullable|numeric|min:0|max:1',
             'split_reveal_direction' => 'nullable|string|in:vertical,horizontal',
+            'nav_deals_enabled' => 'nullable|boolean',
+            'nav_deals_text' => 'nullable|string|max:50',
+            'nav_deals_link' => 'nullable|string|max:200',
+            'category_deals_card_enabled' => 'nullable|boolean',
+            'category_deals_card_title' => 'nullable|string|max:50',
+            'category_deals_card_subtitle' => 'nullable|string|max:100',
+            'category_deals_card_link' => 'nullable|string|max:200',
             'custom_themes' => 'nullable',
             'deleted_theme_ids' => 'nullable',
         ]);
