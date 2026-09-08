@@ -30,11 +30,6 @@ class PublicBannerController extends Controller
             ->orderBy('id', 'asc')
             ->get();
 
-        // Increment impressions count in background/bulk
-        if ($banners->isNotEmpty()) {
-            Banner::whereIn('id', $banners->pluck('id'))->increment('impressions_count');
-        }
-
         // Segment by placement
         $primaryBanners = $banners->filter(function ($b) {
             return in_array($b->placement, ['primary_hero', 'hero_slider']);
