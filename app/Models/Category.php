@@ -41,6 +41,25 @@ class Category extends Model
         return $this->hasMany(Category::class, 'parent_id')->orderBy('display_order');
     }
 
+    public function childrenRecursive(): HasMany
+    {
+        return $this->children()->with(['childrenRecursive', 'products']);
+    }
+
+    /**
+     * Recursively retrieve all descendant category IDs
+     */
+    public function getAllChildrenIds(): array
+    {
+        $ids = [];
+        $children = $this->relationLoaded('children') ? $this->children : $this->children()->get();
+        foreach ($children as $child) {
+            $ids[] = $child->id;
+            $ids = array_merge($ids, $child->getAllChildrenIds());
+        }
+        return $ids;
+    }
+
     public function products(): HasMany
     {
         return $this->hasMany(Product::class);

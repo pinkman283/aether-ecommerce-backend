@@ -16,15 +16,27 @@ class ProductController extends Controller
         $query = Product::with(['category', 'primaryImage', 'images', 'variants'])
             ->active();
 
-        // Filter by category slug(s) or ID(s)
+        // Filter by category slug(s) or ID(s) (including all recursive subcategories)
         if ($request->filled('categories') || $request->filled('category')) {
             $catInput = $request->input('categories', $request->input('category'));
             $catSlugs = is_array($catInput) ? $catInput : explode(',', (string) $catInput);
             $catSlugs = array_values(array_filter(array_map('trim', $catSlugs)));
             if (!empty($catSlugs)) {
-                $query->whereHas('category', function ($q) use ($catSlugs) {
-                    $q->whereIn('slug', $catSlugs)->orWhereIn('id', $catSlugs);
-                });
+                $matchedCategories = \App\Models\Category::whereIn('slug', $catSlugs)
+                    ->orWhereIn('id', $catSlugs)
+                    ->get();
+
+                $allCategoryIds = [];
+                foreach ($matchedCategories as $cat) {
+                    $allCategoryIds[] = $cat->id;
+                    $descendantIds = $cat->getAllChildrenIds();
+                    $allCategoryIds = array_merge($allCategoryIds, $descendantIds);
+                }
+                $allCategoryIds = array_values(array_unique($allCategoryIds));
+
+                if (!empty($allCategoryIds)) {
+                    $query->whereIn('category_id', $allCategoryIds);
+                }
             }
         }
 

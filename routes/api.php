@@ -202,6 +202,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     // Category Management
     Route::get('/categories', [AdminCategoryController::class, 'index']);
     Route::post('/categories', [AdminCategoryController::class, 'store']);
+    Route::post('/categories/upload-image', [AdminCategoryController::class, 'uploadImage']);
     Route::post('/categories/bulk-delete', [AdminCategoryController::class, 'bulkDestroy']);
     Route::put('/categories/{id}', [AdminCategoryController::class, 'update']);
     Route::delete('/categories/{id}', [AdminCategoryController::class, 'destroy']);

@@ -15,8 +15,32 @@ class AdminCategoryController extends Controller
     {
         $this->checkPermission($request, 'categories.manage', 'products.view', 'products.manage');
 
-        $categories = Category::withCount('products')->orderBy('display_order')->get();
+        $categories = Category::withCount('products')
+            ->with(['parent.parent.parent', 'children.children.children'])
+            ->orderBy('display_order')
+            ->get();
         return response()->json($categories);
+    }
+
+    public function uploadImage(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'categories.manage');
+
+        $request->validate([
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,svg,avif|max:10240',
+        ]);
+
+        $file = $request->file('image');
+        $filename = 'cat_' . Str::random(16) . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $path = $file->storeAs('categories', $filename, 'public');
+        $fullUrl = url('storage/' . $path);
+
+        return response()->json([
+            'message' => 'Category image uploaded successfully',
+            'image_url' => $fullUrl,
+            'path' => $path,
+            'filename' => $filename,
+        ], 201);
     }
 
     public function store(Request $request): JsonResponse
@@ -25,8 +49,9 @@ class AdminCategoryController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'parent_id' => 'nullable|integer|exists:categories,id',
             'description' => 'nullable|string',
-            'image' => 'nullable|string|url',
+            'image' => 'nullable|string',
             'icon' => 'nullable|string|max:50',
             'badge' => 'nullable|string|max:50',
             'is_featured' => 'boolean',
@@ -39,6 +64,7 @@ class AdminCategoryController extends Controller
         }
 
         $category = Category::create([
+            'parent_id' => $validated['parent_id'] ?? null,
             'name' => $validated['name'],
             'slug' => $slug,
             'description' => $validated['description'] ?? null,
@@ -59,7 +85,7 @@ class AdminCategoryController extends Controller
 
         return response()->json([
             'message' => 'Category created successfully',
-            'category' => $category->loadCount('products'),
+            'category' => $category->loadCount('products')->load('parent'),
         ], 201);
     }
 
@@ -72,13 +98,28 @@ class AdminCategoryController extends Controller
 
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
+            'parent_id' => 'nullable|integer|exists:categories,id',
             'description' => 'nullable|string',
-            'image' => 'nullable|string|url',
+            'image' => 'nullable|string',
             'icon' => 'nullable|string|max:50',
             'badge' => 'nullable|string|max:50',
             'is_featured' => 'boolean',
             'display_order' => 'integer',
         ]);
+
+        if (array_key_exists('parent_id', $validated) && $validated['parent_id']) {
+            if ($validated['parent_id'] == $category->id) {
+                return response()->json([
+                    'message' => 'A category cannot be its own parent.',
+                ], 422);
+            }
+            $descendants = $category->getAllChildrenIds();
+            if (in_array($validated['parent_id'], $descendants)) {
+                return response()->json([
+                    'message' => 'Cannot set a descendant category as parent.',
+                ], 422);
+            }
+        }
 
         $category->fill($validated);
         $wasDirty = $category->isDirty();
@@ -98,7 +139,7 @@ class AdminCategoryController extends Controller
 
         return response()->json([
             'message' => 'Category updated successfully',
-            'category' => $category->loadCount('products'),
+            'category' => $category->loadCount('products')->load('parent'),
         ]);
     }
 
