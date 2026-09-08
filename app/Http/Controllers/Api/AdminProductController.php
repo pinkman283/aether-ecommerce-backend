@@ -106,6 +106,7 @@ class AdminProductController extends Controller
             'tags' => 'nullable|array',
             'variants' => 'nullable|array',
             'variants.*.name' => 'required_with:variants|string|max:100',
+            'variants.*.size' => 'nullable|string|max:50',
             'variants.*.color_name' => 'nullable|string|max:100',
             'variants.*.color_hex' => 'nullable|string|max:50',
             'variants.*.stock_quantity' => 'nullable|integer|min:0',
@@ -200,12 +201,13 @@ class AdminProductController extends Controller
         if (!empty($variantItems) && is_array($variantItems)) {
             $totalVariantStock = 0;
             foreach ($variantItems as $v) {
-                if (empty($v['name']) && empty($v['color_name'])) continue;
+                if (empty($v['name']) && empty($v['color_name']) && empty($v['size'])) continue;
                 $vStock = (int)($v['stock_quantity'] ?? 0);
                 $totalVariantStock += $vStock;
                 $product->variants()->create([
-                    'name' => $v['name'] ?? ($v['color_name'] ?? 'Default Edition'),
-                    'color_name' => $v['color_name'] ?? $v['name'] ?? null,
+                    'name' => $v['name'] ?? ($v['color_name'] ? ($v['color_name'] . (!empty($v['size']) ? ' / ' . $v['size'] : '')) : ($v['size'] ?? 'Standard Option')),
+                    'size' => $v['size'] ?? null,
+                    'color_name' => $v['color_name'] ?? null,
                     'color_hex' => $v['color_hex'] ?? null,
                     'stock_quantity' => $vStock,
                     'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,
@@ -263,6 +265,7 @@ class AdminProductController extends Controller
             'tags' => 'nullable|array',
             'variants' => 'nullable|array',
             'variants.*.name' => 'required_with:variants|string|max:100',
+            'variants.*.size' => 'nullable|string|max:50',
             'variants.*.color_name' => 'nullable|string|max:100',
             'variants.*.color_hex' => 'nullable|string|max:50',
             'variants.*.stock_quantity' => 'nullable|integer|min:0',
@@ -344,12 +347,13 @@ class AdminProductController extends Controller
             if (!empty($variantItems) && is_array($variantItems)) {
                 $totalVariantStock = 0;
                 foreach ($variantItems as $v) {
-                    if (empty($v['name']) && empty($v['color_name'])) continue;
+                    if (empty($v['name']) && empty($v['color_name']) && empty($v['size'])) continue;
                     $vStock = (int)($v['stock_quantity'] ?? 0);
                     $totalVariantStock += $vStock;
                     $product->variants()->create([
-                        'name' => $v['name'] ?? ($v['color_name'] ?? 'Default Edition'),
-                        'color_name' => $v['color_name'] ?? $v['name'] ?? null,
+                        'name' => $v['name'] ?? ($v['color_name'] ? ($v['color_name'] . (!empty($v['size']) ? ' / ' . $v['size'] : '')) : ($v['size'] ?? 'Standard Option')),
+                        'size' => $v['size'] ?? null,
+                        'color_name' => $v['color_name'] ?? null,
                         'color_hex' => $v['color_hex'] ?? null,
                         'stock_quantity' => $vStock,
                         'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,

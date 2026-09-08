@@ -8,6 +8,7 @@ use App\Models\Lead;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -232,7 +233,7 @@ class AdminLeadController extends Controller
 
             $shipping = (float) ($validated['shipping_amount'] ?? 0);
             $discount = (float) ($validated['discount_amount'] ?? 0);
-            $tax = (float) ($subtotal * 0.08);
+            $tax = (float) (Setting::isVatEnabled() ? round($subtotal * (Setting::getVatRate() / 100), 2) : 0.00);
             $totalAmount = max(0, $subtotal + $shipping + $tax - $discount);
 
             $orderNumber = 'ORD-' . strtoupper(Str::random(8));

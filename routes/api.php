@@ -384,6 +384,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::post('/reviews/bulk-approve', [AdminReviewController::class, 'bulkApprove']);
     Route::post('/reviews/bulk-reject', [AdminReviewController::class, 'bulkReject']);
     Route::patch('/reviews/{id}/approval', [AdminReviewController::class, 'toggleApproval']);
+    Route::patch('/reviews/visibility', [AdminReviewController::class, 'toggleVisibility']);
     Route::delete('/reviews/{id}', [AdminReviewController::class, 'destroy']);
 
     // Banners & Promotional Campaigns

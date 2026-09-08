@@ -7,6 +7,7 @@ use App\Models\AuditLog;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\Setting;
 use App\Models\User;
 use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
@@ -137,7 +138,7 @@ class AdminOrderController extends Controller
         }
 
         $shipping = (float) ($validated['shipping_amount'] ?? 0);
-        $tax = (float) ($validated['tax_amount'] ?? ($subtotal * 0.08));
+        $tax = (float) ($validated['tax_amount'] ?? (Setting::isVatEnabled() ? round($subtotal * (Setting::getVatRate() / 100), 2) : 0.00));
         $discount = (float) ($validated['discount_amount'] ?? 0);
         $totalAmount = max(0, $subtotal + $shipping + $tax - $discount);
 

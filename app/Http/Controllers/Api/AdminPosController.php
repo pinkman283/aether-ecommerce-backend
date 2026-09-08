@@ -9,6 +9,7 @@ use App\Models\OrderItem;
 use App\Models\PosRegisterSession;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\Setting;
 use App\Models\User;
 use App\Services\InventoryCostingService;
 use Illuminate\Http\JsonResponse;
@@ -105,7 +106,7 @@ class AdminPosController extends Controller
             }
 
             $orderDiscount = (float) ($validated['discount_amount'] ?? 0);
-            $taxAmount = (float) ($validated['tax_amount'] ?? ($subtotal * 0.08));
+            $taxAmount = (float) ($validated['tax_amount'] ?? (Setting::isVatEnabled() ? round($subtotal * (Setting::getVatRate() / 100), 2) : 0.00));
             $totalAmount = max(0, $subtotal - $orderDiscount) + $taxAmount;
 
             $cashReceived = (float) ($validated['cash_received'] ?? $totalAmount);

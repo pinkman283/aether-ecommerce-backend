@@ -33,6 +33,28 @@ class Setting extends Model
         };
     }
 
+    public static function isVatEnabled(): bool
+    {
+        $setting = self::where('key', 'vat_enabled')->first();
+        if (!$setting) {
+            $taxSetting = self::where('key', 'tax_enabled')->first();
+            if ($taxSetting) {
+                return filter_var($taxSetting->value, FILTER_VALIDATE_BOOLEAN);
+            }
+            return true;
+        }
+        return filter_var($setting->value, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    public static function getVatRate(): float
+    {
+        if (!self::isVatEnabled()) {
+            return 0.0;
+        }
+        $val = self::get('vat_rate', self::get('tax_rate', 8.0));
+        return is_numeric($val) ? (float) $val : 8.0;
+    }
+
     public static function set(string $key, mixed $value, string $group = 'general', string $type = 'string', ?string $label = null): self
     {
         $stringValue = is_array($value) ? json_encode($value) : (string) $value;

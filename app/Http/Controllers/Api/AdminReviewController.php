@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Product;
 use App\Models\Review;
+use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -33,12 +34,16 @@ class AdminReviewController extends Controller
             1 => Review::where('rating', 1)->count(),
         ];
 
+        $reviewsSetting = Setting::where('key', 'reviews_enabled')->first();
+        $reviewsEnabled = $reviewsSetting ? filter_var($reviewsSetting->value, FILTER_VALIDATE_BOOLEAN) : true;
+
         return response()->json([
             'total_reviews' => $total,
             'approved_reviews' => $approved,
             'pending_reviews' => $pending,
             'average_rating' => $avgRating,
             'rating_distribution' => $ratingDistribution,
+            'reviews_enabled' => $reviewsEnabled,
         ]);
     }
 
@@ -278,6 +283,29 @@ class AdminReviewController extends Controller
         Product::where('id', $productId)->update([
             'rating_average' => $avg,
             'review_count' => $count,
+        ]);
+    }
+
+    public function toggleVisibility(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'reviews.manage');
+
+        $enabled = $request->boolean('enabled', true);
+
+        Setting::updateOrCreate(
+            ['key' => 'reviews_enabled'],
+            [
+                'value' => $enabled ? '1' : '0',
+                'group' => 'general',
+                'type' => 'boolean',
+                'label' => 'Storefront Reviews Enabled',
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'reviews_enabled' => $enabled,
+            'message' => $enabled ? 'Storefront reviews & ratings enabled.' : 'Storefront reviews & ratings disabled.',
         ]);
     }
 }

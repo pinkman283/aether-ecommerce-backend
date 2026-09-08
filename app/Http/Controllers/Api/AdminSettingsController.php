@@ -56,6 +56,21 @@ class AdminSettingsController extends Controller
             }
         }
 
+        // Keep VAT and Tax settings synchronized
+        if (isset($newValues['vat_enabled'])) {
+            $isVat = filter_var($newValues['vat_enabled'], FILTER_VALIDATE_BOOLEAN) ? 'true' : 'false';
+            Setting::set('vat_enabled', $isVat, 'tax', 'boolean', 'VAT Enabled');
+            Setting::set('tax_enabled', $isVat, 'tax', 'boolean', 'Tax Enabled');
+        }
+        if (isset($newValues['vat_rate'])) {
+            $rateStr = (string) $newValues['vat_rate'];
+            Setting::set('vat_rate', $rateStr, 'tax', 'number', 'Default VAT Rate (%)');
+            Setting::set('tax_rate', $rateStr, 'tax', 'number', 'Sales Tax Rate (%)');
+        } elseif (isset($newValues['tax_rate']) && !isset($newValues['vat_rate'])) {
+            $rateStr = (string) $newValues['tax_rate'];
+            Setting::set('vat_rate', $rateStr, 'tax', 'number', 'Default VAT Rate (%)');
+        }
+
         // Keep store_brand_name and split_reveal_title in sync if store_name is updated
         if (isset($newValues['store_name']) && !empty($newValues['store_name'])) {
             $brand = $newValues['store_name'];
@@ -110,7 +125,9 @@ class AdminSettingsController extends Controller
                 'store_name' => $settings['store_name']->value ?? 'AETHER Audio',
                 'support_email' => $settings['support_email']->value ?? 'ops@aether-audio.test',
                 'currency' => $settings['currency']->value ?? 'BDT',
-                'tax_rate' => $settings['tax_rate']->value ?? '5',
+                'tax_rate' => $settings['tax_rate']->value ?? ($settings['vat_rate']->value ?? '8.0'),
+                'vat_rate' => $settings['vat_rate']->value ?? ($settings['tax_rate']->value ?? '8.0'),
+                'vat_enabled' => isset($settings['vat_enabled']) ? filter_var($settings['vat_enabled']->value, FILTER_VALIDATE_BOOLEAN) : (isset($settings['tax_enabled']) ? filter_var($settings['tax_enabled']->value, FILTER_VALIDATE_BOOLEAN) : true),
                 'free_shipping_threshold' => $settings['free_shipping_threshold']->value ?? '3000',
                 'standard_shipping_rate' => $settings['standard_shipping_rate']->value ?? '60',
                 'priority_shipping_rate' => $settings['priority_shipping_rate']->value ?? '120',

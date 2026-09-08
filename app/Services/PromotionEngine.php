@@ -10,6 +10,7 @@ use App\Models\PromotionCode;
 use App\Models\PromotionCustomerRestriction;
 use App\Models\PromotionProductTarget;
 use App\Models\PromotionRedemption;
+use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -39,6 +40,8 @@ class PromotionEngine
         string $paymentMethod = 'cash_on_delivery'
     ): array {
         if (empty($cartItems)) {
+            $vatEnabled = Setting::isVatEnabled();
+            $vatRate = $vatEnabled ? Setting::getVatRate() : 0.0;
             return [
                 'valid' => true,
                 'subtotal' => 0.00,
@@ -48,6 +51,9 @@ class PromotionEngine
                 'total_discount' => 0.00,
                 'shipping_amount' => 0.00,
                 'tax_amount' => 0.00,
+                'vat_amount' => 0.00,
+                'vat_rate' => round($vatRate, 2),
+                'vat_enabled' => $vatEnabled,
                 'grand_total' => 0.00,
                 'applied_promotions' => [],
                 'message' => 'Cart is empty.',
@@ -263,11 +269,14 @@ class PromotionEngine
         $orderDiscount = min($subtotal, round($orderDiscount, 2));
         $totalDiscount = $orderDiscount + $shippingDiscount;
 
-        // Shipping calculation
+        // Shipping & VAT calculation
         $effectiveShipping = max(0.00, $baseShippingRate - $shippingDiscount);
         $taxable = max(0.00, $subtotal - $orderDiscount);
-        $tax = round($taxable * 0.08, 2);
-        $grandTotal = round($taxable + $effectiveShipping + $tax, 2);
+
+        $vatEnabled = Setting::isVatEnabled();
+        $vatRate = $vatEnabled ? Setting::getVatRate() : 0.0;
+        $vatAmount = ($vatEnabled && $vatRate > 0) ? round($taxable * ($vatRate / 100), 2) : 0.00;
+        $grandTotal = round($taxable + $effectiveShipping + $vatAmount, 2);
 
         $hasError = !empty($codeErrorMessage) || !empty($claimErrorMessage);
         $errorMessage = $codeErrorMessage ?: $claimErrorMessage;
@@ -281,7 +290,10 @@ class PromotionEngine
             'total_discount' => round($totalDiscount, 2),
             'shipping_amount' => round($effectiveShipping, 2),
             'base_shipping_rate' => round($baseShippingRate, 2),
-            'tax_amount' => round($tax, 2),
+            'tax_amount' => round($vatAmount, 2),
+            'vat_amount' => round($vatAmount, 2),
+            'vat_rate' => round($vatRate, 2),
+            'vat_enabled' => $vatEnabled,
             'grand_total' => round($grandTotal, 2),
             'applied_promotions' => $appliedPromotions,
             'message' => $errorMessage ?: (count($appliedPromotions) > 0 ? 'Promotion applied successfully!' : null),

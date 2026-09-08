@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\Review;
+use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -12,6 +13,13 @@ class ReviewController extends Controller
 {
     public function store(Request $request, int $productId): JsonResponse
     {
+        $reviewsSetting = Setting::where('key', 'reviews_enabled')->first();
+        if ($reviewsSetting && !filter_var($reviewsSetting->value, FILTER_VALIDATE_BOOLEAN)) {
+            return response()->json([
+                'message' => 'Product reviews and ratings are currently disabled by the store administrator.'
+            ], 403);
+        }
+
         $product = Product::findOrFail($productId);
         $user = auth('sanctum')->user() ?? $request->user();
 
