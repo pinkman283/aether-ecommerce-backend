@@ -16,12 +16,39 @@ class ProductController extends Controller
         $query = Product::with(['category', 'primaryImage', 'images', 'variants'])
             ->active();
 
-        // Filter by category slug or ID
-        if ($request->filled('category')) {
-            $catSlug = $request->input('category');
-            $query->whereHas('category', function ($q) use ($catSlug) {
-                $q->where('slug', $catSlug)->orWhere('id', $catSlug);
-            });
+        // Filter by category slug(s) or ID(s)
+        if ($request->filled('categories') || $request->filled('category')) {
+            $catInput = $request->input('categories', $request->input('category'));
+            $catSlugs = is_array($catInput) ? $catInput : explode(',', (string) $catInput);
+            $catSlugs = array_values(array_filter(array_map('trim', $catSlugs)));
+            if (!empty($catSlugs)) {
+                $query->whereHas('category', function ($q) use ($catSlugs) {
+                    $q->whereIn('slug', $catSlugs)->orWhereIn('id', $catSlugs);
+                });
+            }
+        }
+
+        // Filter by brand slug(s) or name(s)
+        if ($request->filled('brands') || $request->filled('brand')) {
+            $brandInput = $request->input('brands', $request->input('brand'));
+            $brandSlugs = is_array($brandInput) ? $brandInput : explode(',', (string) $brandInput);
+            $brandSlugs = array_values(array_filter(array_map('trim', $brandSlugs)));
+            if (!empty($brandSlugs)) {
+                $matchedNames = \App\Models\Brand::whereIn('slug', $brandSlugs)
+                    ->orWhereIn('name', $brandSlugs)
+                    ->orWhereIn('id', $brandSlugs)
+                    ->pluck('name')
+                    ->all();
+
+                $allTargets = array_values(array_unique(array_merge($brandSlugs, $matchedNames)));
+
+                $query->where(function ($q) use ($allTargets) {
+                    $q->whereIn('brand', $allTargets);
+                    foreach ($allTargets as $t) {
+                        $q->orWhere('brand', 'like', "%{$t}%");
+                    }
+                });
+            }
         }
 
         // Search query
@@ -60,6 +87,9 @@ class ProductController extends Controller
         }
         if ($request->boolean('in_stock')) {
             $query->where('stock_quantity', '>', 0);
+        }
+        if ($request->boolean('discounted') || $request->boolean('on_sale') || $request->boolean('discounted_items')) {
+            $query->whereNotNull('compare_at_price')->whereColumn('compare_at_price', '>', 'price');
         }
 
         // Sorting
