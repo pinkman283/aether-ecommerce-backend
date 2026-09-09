@@ -160,39 +160,43 @@ class ProductController extends Controller
 
     public function featured(): JsonResponse
     {
-        $featuredProducts = Product::featured()
-            ->with(['category', 'primaryImage', 'images', 'variants'])
-            ->take(8)
-            ->get();
+        $data = \Illuminate\Support\Facades\Cache::remember('api_storefront_featured_payload', 60, function () {
+            $featuredProducts = Product::featured()
+                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->take(8)
+                ->get();
 
-        $newArrivals = Product::newArrivals()
-            ->with(['category', 'primaryImage', 'images', 'variants'])
-            ->take(6)
-            ->get();
+            $newArrivals = Product::newArrivals()
+                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->take(6)
+                ->get();
 
-        $bestSellers = Product::bestSellers()
-            ->with(['category', 'primaryImage', 'images', 'variants'])
-            ->take(6)
-            ->get();
+            $bestSellers = Product::bestSellers()
+                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->take(6)
+                ->get();
 
-        $featuredCategories = Category::whereNull('parent_id')
-            ->where('is_featured', true)
-            ->withCount('products')
-            ->orderBy('display_order')
-            ->get();
-
-        if ($featuredCategories->isEmpty()) {
             $featuredCategories = Category::whereNull('parent_id')
+                ->where('is_featured', true)
                 ->withCount('products')
                 ->orderBy('display_order')
                 ->get();
-        }
 
-        return response()->json([
-            'featured_products' => $featuredProducts,
-            'new_arrivals' => $newArrivals,
-            'best_sellers' => $bestSellers,
-            'featured_categories' => $featuredCategories,
-        ]);
+            if ($featuredCategories->isEmpty()) {
+                $featuredCategories = Category::whereNull('parent_id')
+                    ->withCount('products')
+                    ->orderBy('display_order')
+                    ->get();
+            }
+
+            return [
+                'featured_products' => $featuredProducts,
+                'new_arrivals' => $newArrivals,
+                'best_sellers' => $bestSellers,
+                'featured_categories' => $featuredCategories,
+            ];
+        });
+
+        return response()->json($data);
     }
 }
