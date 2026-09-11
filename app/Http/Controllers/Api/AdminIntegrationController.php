@@ -192,21 +192,13 @@ class AdminIntegrationController extends Controller
                 break;
 
             case 'steadfast':
-                if (empty($creds['api_key'])) {
-                    $success = false;
-                    $message = "Steadfast API Key required.";
-                } else {
-                    $message = "Steadfast Logistics gateway ping: Balance BDT 4,850 ({$latency}ms)";
-                }
-                break;
-
             case 'pathao':
-                if (empty($creds['client_id'])) {
-                    $success = false;
-                    $message = "Pathao Client ID required.";
-                } else {
-                    $message = "Pathao OAuth2 Token generation verified ({$latency}ms)";
-                }
+            case 'redx':
+                $courierManager = app(\App\Services\Courier\CourierManager::class);
+                $driver = $courierManager->driver($provider);
+                $res = $driver->testConnection();
+                $success = (bool) ($res['success'] ?? false);
+                $message = $res['message'] ?? 'Connection test completed.';
                 break;
 
             case 'bulksms_bd':

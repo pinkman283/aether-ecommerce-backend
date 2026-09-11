@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Order extends Model
 {
@@ -35,6 +36,7 @@ class Order extends Model
         'payment_method',
         'payment_transaction_id',
         'order_status',
+        'shipping_method',
         'tracking_code',
         'carrier',
         'notes',
@@ -113,5 +115,15 @@ class Order extends Model
     public function redemption(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(PromotionRedemption::class);
+    }
+
+    public function shipments(): HasMany
+    {
+        return $this->hasMany(Shipment::class)->latest();
+    }
+
+    public function latestShipment(): HasOne
+    {
+        return $this->hasOne(Shipment::class)->latestOfMany();
     }
 }

@@ -71,6 +71,8 @@ Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->m
 Route::post('/promotions/evaluate', [PromotionController::class, 'evaluate']);
 Route::get('/promotions/claimable', [PromotionController::class, 'claimable']);
 Route::get('/orders/track/{orderNumber}', [OrderController::class, 'track']);
+Route::get('/shipping-zones', [OrderController::class, 'shippingZones']);
+Route::post('/webhooks/courier/{provider}', [\App\Http\Controllers\Api\CourierWebhookController::class, 'handle']);
 Route::get('/orders/{orderNumber}', [OrderController::class, 'show']);
 Route::post('/orders', [OrderController::class, 'store'])->middleware('sliding-throttle:order-checkout'); // Guest / Customer Checkout
 Route::post('/leads/capture', [LeadCaptureController::class, 'capture'])->middleware('sliding-throttle:leads-capture'); // Storefront Checkout Abandonment Capture
@@ -231,6 +233,13 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::delete('/orders/{id}', [AdminOrderController::class, 'destroy']);
     Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
     Route::post('/orders/{id}/refund', [AdminOrderController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
+
+    // Courier Logistics & Consignment Management
+    Route::get('/orders/{id}/courier-options', [AdminOrderController::class, 'getCourierOptions']);
+    Route::post('/orders/{id}/shipments', [AdminOrderController::class, 'bookShipment']);
+    Route::get('/orders/{id}/shipments/{shipmentId}/track', [AdminOrderController::class, 'trackShipment']);
+    Route::post('/orders/{id}/shipments/{shipmentId}/cancel', [AdminOrderController::class, 'cancelShipment']);
+    Route::get('/orders/{id}/shipments/{shipmentId}/label', [AdminOrderController::class, 'printShippingLabel']);
 
     // Commercial Sales History & Invoices
     Route::get('/sales', [AdminSalesController::class, 'index']);

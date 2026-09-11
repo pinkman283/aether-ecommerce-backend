@@ -20,7 +20,7 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
 
-        $query = Order::with(['items.product', 'items.variant', 'user', 'cashierUser', 'posRegisterSession.posRegister'])->latest();
+        $query = Order::with(['items.product', 'items.variant', 'user', 'cashierUser', 'posRegisterSession.posRegister', 'latestShipment', 'shipments'])->latest();
 
         if ($request->filled('source') && $request->input('source') !== 'all') {
             $query->where('order_source', $request->input('source'));
@@ -76,7 +76,7 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
 
-        $order = Order::with(['items.product', 'items.variant', 'user'])->findOrFail($id);
+        $order = Order::with(['items.product', 'items.variant', 'user', 'shipments', 'latestShipment'])->findOrFail($id);
         return response()->json($order);
     }
 
@@ -408,4 +408,173 @@ class AdminOrderController extends Controller
             'deleted_count' => $count,
         ]);
     }
+
+    /**
+     * Get available couriers and pre-filled logistics params for an order
+     */
+    public function getCourierOptions(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        $order = Order::with(['items.product', 'shipments'])->findOrFail($id);
+        $courierManager = app(\App\Services\Courier\CourierManager::class);
+        $providers = $courierManager->getAvailableProviders();
+
+        $activeShipment = $order->shipments()
+            ->whereNotIn('status', ['cancelled', 'delivery_failed'])
+            ->first();
+
+        // Calculate approximate order weight based on item quantities
+        $itemCount = $order->items->sum('quantity');
+        $suggestedWeight = max(0.5, round($itemCount * 0.4, 2));
+
+        $codAmount = $order->payment_status === 'paid' ? 0.00 : (float) $order->total_amount;
+
+        return response()->json([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'customer_name' => $order->customer_name,
+            'customer_phone' => $order->customer_phone,
+            'shipping_address' => $order->shipping_address,
+            'payment_status' => $order->payment_status,
+            'suggested_cod_amount' => $codAmount,
+            'suggested_weight' => $suggestedWeight,
+            'default_provider' => $courierManager->getDefaultProvider(),
+            'providers' => $providers,
+            'active_shipment' => $activeShipment,
+        ]);
+    }
+
+    /**
+     * Book parcel with courier
+     */
+    public function bookShipment(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        $order = Order::with('items')->findOrFail($id);
+
+        $validated = $request->validate([
+            'provider' => 'required|string|in:steadfast,pathao,redx',
+            'weight' => 'nullable|numeric|min:0.1',
+            'cod_amount' => 'nullable|numeric|min:0',
+            'pickup_store_id' => 'nullable|string',
+            'notes' => 'nullable|string|max:500',
+            'delivery_area' => 'nullable|string|max:150',
+            'recipient_name' => 'nullable|string|max:255',
+            'recipient_phone' => 'nullable|string|max:30',
+            'recipient_address' => 'nullable|string',
+        ]);
+
+        try {
+            $courierManager = app(\App\Services\Courier\CourierManager::class);
+            $shipment = $courierManager->bookShipment($order, $validated);
+
+            return response()->json([
+                'message' => "Shipment successfully booked with {$shipment->provider}. Consignment: {$shipment->consignment_id}",
+                'shipment' => $shipment,
+                'order' => $order->fresh(['items', 'shipments', 'latestShipment']),
+            ], 201);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    /**
+     * Poll on-demand live status for a shipment
+     */
+    public function trackShipment(Request $request, int $id, int $shipmentId): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
+        $order = Order::findOrFail($id);
+        $shipment = Shipment::where('order_id', $order->id)->findOrFail($shipmentId);
+
+        $courierManager = app(\App\Services\Courier\CourierManager::class);
+        $updatedShipment = $courierManager->syncShipmentStatus($shipment);
+
+        return response()->json([
+            'message' => "Shipment status refreshed: {$updatedShipment->status}",
+            'shipment' => $updatedShipment,
+            'order' => $order->fresh(['shipments', 'latestShipment']),
+        ]);
+    }
+
+    /**
+     * Cancel an active consignment with courier
+     */
+    public function cancelShipment(Request $request, int $id, int $shipmentId): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        $order = Order::findOrFail($id);
+        $shipment = Shipment::where('order_id', $order->id)->findOrFail($shipmentId);
+
+        if (!$shipment->canBeCancelled()) {
+            return response()->json([
+                'message' => "Shipment cannot be cancelled in status '{$shipment->status}'.",
+            ], 422);
+        }
+
+        $courierManager = app(\App\Services\Courier\CourierManager::class);
+        $courierManager->driver($shipment->provider)->cancelShipment($shipment->consignment_id);
+
+        $shipment->update([
+            'status' => 'cancelled',
+            'cancelled_at' => now(),
+        ]);
+
+        \App\Models\AuditLog::log(
+            $request->user(),
+            'courier.cancelled',
+            'Shipment',
+            $shipment->id,
+            "Cancelled consignment #{$shipment->consignment_id} ({$shipment->provider}) for Order #{$order->order_number}."
+        );
+
+        return response()->json([
+            'message' => "Shipment #{$shipment->consignment_id} cancelled.",
+            'shipment' => $shipment,
+            'order' => $order->fresh(['shipments', 'latestShipment']),
+        ]);
+    }
+
+    /**
+     * Get printable dispatch label data
+     */
+    public function printShippingLabel(Request $request, int $id, int $shipmentId): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
+        $order = Order::with('items.product')->findOrFail($id);
+        $shipment = Shipment::where('order_id', $order->id)->findOrFail($shipmentId);
+
+        return response()->json([
+            'label' => [
+                'order_number' => $order->order_number,
+                'created_at' => $order->created_at->format('d M Y, h:i A'),
+                'provider' => ucfirst($shipment->provider),
+                'consignment_id' => $shipment->consignment_id,
+                'tracking_code' => $shipment->tracking_code,
+                'tracking_url' => $shipment->tracking_url,
+                'recipient_name' => $shipment->recipient_name,
+                'recipient_phone' => $shipment->recipient_phone,
+                'recipient_address' => $shipment->recipient_address,
+                'delivery_area' => $shipment->delivery_area,
+                'cod_amount' => $shipment->cod_amount,
+                'weight' => $shipment->weight . ' kg',
+                'notes' => $shipment->notes,
+                'items' => $order->items->map(function ($item) {
+                    return [
+                        'name' => $item->product_name ?: $item->product?->name,
+                        'variant' => $item->variant_name,
+                        'quantity' => $item->quantity,
+                    ];
+                }),
+            ],
+        ]);
+    }
 }
+

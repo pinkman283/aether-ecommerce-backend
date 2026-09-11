@@ -559,6 +559,107 @@ class AccountingService
     }
 
     /**
+     * Post courier booking expense entry (Account 6040: Courier & Logistics Expense)
+     */
+    public static function postCourierBooking(\App\Models\Shipment $shipment): ?JournalEntry
+    {
+        $fee = round((float) $shipment->courier_charge, 2);
+        if ($fee <= 0) {
+            return null;
+        }
+
+        // Prevent duplicate entry
+        $existing = JournalEntry::where('reference_type', 'Shipment')
+            ->where('reference_id', $shipment->id)
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $lines = [
+            [
+                'account_code' => '6040', // Courier & Logistics Expense
+                'debit' => $fee,
+                'credit' => 0.00,
+                'memo' => "{$shipment->provider} delivery fee for Consignment #{$shipment->consignment_id}",
+            ],
+            [
+                'account_code' => '2040', // Accrued Operational Liabilities (payable to courier)
+                'debit' => 0.00,
+                'credit' => $fee,
+                'memo' => "Accrued payable to {$shipment->provider}",
+            ],
+        ];
+
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'Shipment',
+            'reference_id' => $shipment->id,
+            'reference_number' => 'SHP-' . $shipment->id,
+            'narration' => "Logistics expense for Order #{$shipment->order?->order_number} via {$shipment->provider} (CID: {$shipment->consignment_id})",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post courier remittance settlement (Bank deposit minus courier deductions)
+     */
+    public static function postCourierRemittance(
+        \App\Models\Shipment $shipment,
+        float $netRemitted,
+        float $courierFeeDeducted = 0.00
+    ): ?JournalEntry {
+        $totalCollected = round($netRemitted + $courierFeeDeducted, 2);
+        if ($totalCollected <= 0) {
+            return null;
+        }
+
+        $lines = [];
+
+        // 1. Debit Main Bank Account for net cash deposited
+        if ($netRemitted > 0) {
+            $lines[] = [
+                'account_code' => '1020', // Main Business Bank Account
+                'debit' => round($netRemitted, 2),
+                'credit' => 0.00,
+                'memo' => "Net remittance from {$shipment->provider} for CID #{$shipment->consignment_id}",
+            ];
+        }
+
+        // 2. Debit Courier Expense for fees deducted
+        if ($courierFeeDeducted > 0) {
+            $lines[] = [
+                'account_code' => '6040', // Courier & Logistics Expense
+                'debit' => round($courierFeeDeducted, 2),
+                'credit' => 0.00,
+                'memo' => "{$shipment->provider} service fee deducted on settlement",
+            ];
+        }
+
+        // 3. Credit Accounts Receivable (clearing the customer/courier debt)
+        $lines[] = [
+            'account_code' => '1100', // Accounts Receivable
+            'debit' => 0.00,
+            'credit' => $totalCollected,
+            'memo' => "COD settlement for Order #{$shipment->order?->order_number}",
+        ];
+
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'CourierRemittance',
+            'reference_id' => $shipment->id,
+            'reference_number' => 'RMT-' . $shipment->id . '-' . time(),
+            'narration' => "Courier remittance reconciled: Order #{$shipment->order?->order_number} via {$shipment->provider}",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
      * Recalculate and synchronize all BankAccount current_balances from opening_balance
      * plus posted debit/credit lines on their linked ChartOfAccount.
      */
@@ -582,3 +683,4 @@ class AccountingService
         }
     }
 }
+

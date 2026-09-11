@@ -27,10 +27,55 @@ class Integration extends Model
     protected $casts = [
         'is_enabled' => 'boolean',
         'is_test_mode' => 'boolean',
-        'credentials' => 'array',
         'settings' => 'array',
         'last_tested_at' => 'datetime',
     ];
+
+    /**
+     * Get decrypted credentials transparently with fallback for unencrypted legacy rows
+     */
+    public function getCredentialsAttribute($value): array
+    {
+        if (empty($value)) {
+            return [];
+        }
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        // Try decrypting with Laravel Crypt
+        try {
+            $decrypted = \Illuminate\Support\Facades\Crypt::decryptString($value);
+            $decoded = json_decode($decrypted, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        } catch (\Throwable $e) {
+            // Not encrypted or decryption failed, fallback to raw JSON decode
+        }
+
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Set encrypted credentials
+     */
+    public function setCredentialsAttribute($value): void
+    {
+        if (empty($value)) {
+            $this->attributes['credentials'] = null;
+            return;
+        }
+
+        $json = is_array($value) ? json_encode($value) : (string) $value;
+        try {
+            $this->attributes['credentials'] = \Illuminate\Support\Facades\Crypt::encryptString($json);
+        } catch (\Throwable $e) {
+            $this->attributes['credentials'] = $json;
+        }
+    }
 
     public function scopeEnabled($query)
     {

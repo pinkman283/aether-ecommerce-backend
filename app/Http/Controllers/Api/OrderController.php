@@ -54,7 +54,7 @@ class OrderController extends Controller
     {
         $order = Order::where('order_number', $orderNumber)
             ->orWhere('tracking_code', $orderNumber)
-            ->with('items')
+            ->with(['items', 'latestShipment'])
             ->firstOrFail();
 
         // Mask customer name for privacy protection on public tracking
@@ -70,13 +70,24 @@ class OrderController extends Controller
             'country' => $shippingAddress['country'] ?? 'Country',
         ];
 
+        $latestShipment = $order->latestShipment;
+        $carrierName = $latestShipment ? ucfirst($latestShipment->provider) : ($order->carrier ?: null);
+        $trackingCode = $latestShipment ? $latestShipment->tracking_code : $order->tracking_code;
+        $trackingUrl = $latestShipment?->tracking_url;
+        $shipmentStatus = $latestShipment?->status ?? ($order->order_status === 'delivered' ? 'delivered' : 'pending');
+
         return response()->json([
             'order_number' => $order->order_number,
             'customer_name' => $maskedName,
             'order_status' => $order->order_status,
             'payment_status' => $order->payment_status,
-            'carrier' => $order->carrier ?? 'Standard Express',
-            'tracking_code' => $order->tracking_code ?? 'TRK-' . strtoupper(Str::random(10)),
+            'carrier' => $carrierName,
+            'tracking_code' => $trackingCode,
+            'tracking_url' => $trackingUrl,
+            'shipment_status' => $shipmentStatus,
+            'courier_status_raw' => $latestShipment?->courier_status_raw,
+            'delivery_attempts' => $latestShipment?->delivery_attempts ?? 0,
+            'failure_reason' => $latestShipment?->failure_reason,
             'total_amount' => $order->total_amount,
             'created_at' => $order->created_at,
             'shipped_at' => $order->shipped_at,
@@ -107,6 +118,7 @@ class OrderController extends Controller
             'shipping_address.country' => 'required|string',
             'billing_address' => 'nullable|array',
             'payment_method' => 'required|in:credit_card,cash_on_delivery,paypal,apple_pay',
+            'shipping_method' => 'nullable|string|max:100',
             'coupon_code' => 'nullable|string',
             'claimed_coupon_id' => 'nullable|integer',
             'use_store_credit' => 'nullable|boolean',
@@ -206,7 +218,9 @@ class OrderController extends Controller
             }
 
             // Authoritative server-side PromotionEngine evaluation
-            $baseShipping = $subtotal >= 100 ? 0.00 : 15.00;
+            $shippingMethod = $validated['shipping_method'] ?? 'inside_dhaka';
+            $baseShipping = self::calculateAuthoritativeShippingRate($shippingMethod, $subtotal, $validated['shipping_address'] ?? []);
+
             $eval = PromotionEngine::evaluateCart(
                 $validated['items'],
                 $customerRecord,
@@ -244,15 +258,16 @@ class OrderController extends Controller
                 'subtotal' => $subtotal,
                 'tax_amount' => $tax,
                 'shipping_amount' => $shipping,
+                'shipping_method' => $shippingMethod,
                 'discount_amount' => $discount,
                 'store_credit_amount' => 0.00,
                 'total_amount' => $total,
                 'payment_status' => $validated['payment_method'] === 'cash_on_delivery' ? 'pending' : 'paid',
                 'payment_method' => $validated['payment_method'],
                 'payment_transaction_id' => 'tx_' . Str::random(16),
-                'order_status' => 'processing',
-                'tracking_code' => 'TRK-' . date('md') . strtoupper(Str::random(6)),
-                'carrier' => 'DHL Express Cyber Priority',
+                'order_status' => 'pending',
+                'tracking_code' => null,
+                'carrier' => null,
                 'coupon_code' => $validated['coupon_code'] ?? null,
                 'promotion_id' => $primaryPromoId,
                 'promotion_discount_details' => $eval['applied_promotions'],
@@ -292,4 +307,65 @@ class OrderController extends Controller
             'order' => $result,
         ], 201);
     }
+
+    /**
+     * Compute authoritative server-side shipping rate based on zone and subtotal
+     */
+    public static function calculateAuthoritativeShippingRate(string $method, float $subtotal, array $address = []): float
+    {
+        $zonesRaw = \App\Models\Setting::get('shipping_zones');
+        $zones = is_string($zonesRaw) ? json_decode($zonesRaw, true) : (is_array($zonesRaw) ? $zonesRaw : []);
+
+        if (is_array($zones) && !empty($zones)) {
+            foreach ($zones as $zone) {
+                if (($zone['id'] ?? '') === $method || ($zone['name'] ?? '') === $method) {
+                    $threshold = (float) ($zone['free_threshold'] ?? 0);
+                    if ($threshold > 0 && $subtotal >= $threshold) {
+                        return 0.00;
+                    }
+                    return (float) ($zone['rate'] ?? 60.00);
+                }
+            }
+        }
+
+        // Fallback based on city or method
+        $city = strtolower(trim($address['city'] ?? ''));
+        if (str_contains($method, 'outside') || (!empty($city) && !str_contains($city, 'dhaka'))) {
+            return $subtotal >= 6000 ? 0.00 : 130.00;
+        }
+
+        return $subtotal >= 3000 ? 0.00 : 60.00;
+    }
+
+    /**
+     * Public API endpoint to get active shipping zones and rates
+     */
+    public function shippingZones(): JsonResponse
+    {
+        $zonesRaw = \App\Models\Setting::get('shipping_zones');
+        $zones = is_string($zonesRaw) ? json_decode($zonesRaw, true) : (is_array($zonesRaw) ? $zonesRaw : []);
+
+        $hasOutside = false;
+        if (is_array($zones)) {
+            foreach ($zones as $z) {
+                if (($z['id'] ?? '') === 'outside_dhaka') {
+                    $hasOutside = true;
+                    break;
+                }
+            }
+        }
+
+        if (empty($zones) || !$hasOutside) {
+            $zones = [
+                ['id' => 'inside_dhaka', 'name' => 'Inside Dhaka Metro', 'rate' => 60, 'duration' => '24-48 Hours', 'free_threshold' => 3000, 'is_active' => true],
+                ['id' => 'dhaka_suburbs', 'name' => 'Dhaka Suburbs (Gazipur, Savar, Narayanganj)', 'rate' => 100, 'duration' => '48-72 Hours', 'free_threshold' => 5000, 'is_active' => true],
+                ['id' => 'outside_dhaka', 'name' => 'Outside Dhaka (Nationwide)', 'rate' => 130, 'duration' => '3-5 Business Days', 'free_threshold' => 6000, 'is_active' => true],
+                ['id' => 'express_sameday', 'name' => 'Express Same-Day Dispatch', 'rate' => 200, 'duration' => 'Same Day (Before 2 PM)', 'free_threshold' => 0, 'is_active' => true],
+            ];
+            \App\Models\Setting::set('shipping_zones', json_encode($zones));
+        }
+
+        return response()->json(['zones' => $zones]);
+    }
 }
+
