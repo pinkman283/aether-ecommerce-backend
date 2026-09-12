@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -98,8 +99,26 @@ class AdminSalesController extends Controller
             'items.variant',
             'user',
             'cashierUser',
-            'posRegisterSession.posRegister'
+            'posRegisterSession.posRegister',
+            'latestShipment'
         ])->findOrFail($id);
+
+        $brandName = Setting::get('store_brand_name', Setting::get('store_name', 'Store'));
+        $brandLogo = Setting::get('store_brand_logo', '');
+        $brandTagline = Setting::get('store_brand_tagline', '');
+        $contactRaw = Setting::get('business_contact', []);
+        $contact = is_array($contactRaw) ? $contactRaw : (json_decode((string) $contactRaw, true) ?: []);
+
+        $companyAddress = $contact['warehouse_address'] ?? Setting::get('store_address', '');
+        $companyPhone = $contact['hotline'] ?? Setting::get('store_phone', '');
+        $companyEmail = $contact['support_email'] ?? Setting::get('store_email', '');
+        $companyWebsite = Setting::get('store_website', config('app.url', ''));
+        $companyTax = Setting::get('store_tax_number', Setting::get('tax_number', ''));
+
+        $trackingCode = $order->tracking_code 
+            ?: ($order->latestShipment?->tracking_code 
+                ?: ($order->latestShipment?->consignment_id ?: $order->order_number));
+        $carrier = $order->carrier ?: ($order->latestShipment?->provider ?? null);
 
         $invoiceData = [
             'invoice_number' => 'INV-' . str_pad($order->id, 6, '0', STR_PAD_LEFT),
@@ -110,14 +129,19 @@ class AdminSalesController extends Controller
             'payment_status' => $order->payment_status,
             'payment_method' => $order->payment_method,
             'order_status' => $order->order_status,
+            'carrier' => $carrier,
+            'tracking_code' => $trackingCode,
+            'tracking_id' => $trackingCode,
+            'shipping_method' => $order->shipping_method,
             'company' => [
-                'name' => 'AETHER Industrial Audio Corp.',
-                'tagline' => 'Next-Gen Acoustic Engineering & Studio Hardware',
-                'address' => '4800 Cyber Boulevard, Suite 100, Silicon Valley, CA 94025',
-                'tax_number' => 'US-TAX-8890124',
-                'phone' => '+1 (800) 555-AETH',
-                'email' => 'billing@aether-audio.com',
-                'website' => 'https://aether-audio.com',
+                'name' => $brandName ?: ($contact['legal_name'] ?? 'Store'),
+                'logo' => $brandLogo ?: null,
+                'tagline' => $brandTagline,
+                'address' => $companyAddress,
+                'tax_number' => $companyTax,
+                'phone' => $companyPhone,
+                'email' => $companyEmail,
+                'website' => $companyWebsite,
             ],
             'customer' => [
                 'name' => $order->customer_name,
