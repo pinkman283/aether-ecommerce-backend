@@ -8,10 +8,13 @@ use App\Models\BrandLogo;
 use App\Models\BrandLogoPlacement;
 use App\Models\Setting;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Laravel\Sanctum\Sanctum;
 
 class BrandingLogoManagementTest extends TestCase
 {
+    use DatabaseTransactions;
+
     private User $admin;
 
     protected function setUp(): void
