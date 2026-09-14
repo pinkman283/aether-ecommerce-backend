@@ -23,6 +23,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        if (app()->runningInConsole()) {
+            \Illuminate\Support\Facades\Schema::disableForeignKeyConstraints();
+        }
+
         // 1. Customer Authentication Rate Limiter (3-Tier Defense: Composite + Target Account + IP Spray Ceiling)
         RateLimiter::for('auth-customer-login', function (Request $request) {
             $email = Str::transliterate(Str::lower(trim((string) $request->input('email', ''))));

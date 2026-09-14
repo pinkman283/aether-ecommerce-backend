@@ -157,4 +157,101 @@ class Order extends Model
     {
         return $this->hasMany(OrderTimelineEvent::class)->orderBy('created_at', 'asc');
     }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(OrderPayment::class)->orderBy('created_at', 'asc');
+    }
+
+    /**
+     * Compute total collected amount from payment ledger.
+     */
+    public function getPaidAmountAttribute(): float
+    {
+        $ledgerPaid = (float) $this->payments()
+            ->where('status', 'completed')
+            ->whereIn('type', ['collection', 'partial_payment', 'full_payment', 'advance'])
+            ->sum('amount');
+
+        // Include courier collected amount if no ledger records exist yet (backward compatibility)
+        if ($ledgerPaid <= 0 && (float) ($this->amount_collected_courier ?? 0) > 0) {
+            return (float) $this->amount_collected_courier;
+        }
+
+        return round($ledgerPaid, 2);
+    }
+
+    /**
+     * Compute outstanding remaining balance.
+     */
+    public function getOutstandingBalanceAttribute(): float
+    {
+        $total = round((float) $this->total_amount, 2);
+        $paid = $this->paid_amount;
+        $refunded = round((float) ($this->amount_refunded ?? 0), 2);
+        $netPaid = max(0.00, round($paid - $refunded, 2));
+
+        return max(0.00, round($total - $netPaid, 2));
+    }
+
+    /**
+     * Record a new payment entry in the normalized payment ledger.
+     */
+    public function recordPayment(
+        float $amount,
+        string $paymentMethod = 'cash_on_delivery',
+        string $type = 'collection',
+        string $provider = 'manual',
+        ?string $transactionId = null,
+        ?string $notes = null,
+        ?int $userId = null,
+        string $status = 'completed'
+    ): OrderPayment {
+        $payment = $this->payments()->create([
+            'payment_number' => OrderPayment::generatePaymentNumber(),
+            'payment_method' => $paymentMethod,
+            'provider' => $provider,
+            'transaction_id' => $transactionId,
+            'amount' => round($amount, 2),
+            'currency' => 'BDT',
+            'status' => $status,
+            'type' => $type,
+            'collected_at' => ($status === 'completed') ? now() : null,
+            'notes' => $notes,
+            'created_by_user_id' => $userId,
+        ]);
+
+        $this->recalculatePaymentStatus();
+
+        return $payment;
+    }
+
+    /**
+     * Synchronize order payment_status based on ledger totals and refunds.
+     */
+    public function recalculatePaymentStatus(): string
+    {
+        $total = round((float) $this->total_amount, 2);
+        $refunded = round((float) ($this->amount_refunded ?? 0), 2);
+        $paid = $this->paid_amount;
+
+        $newStatus = 'pending';
+
+        if ($paid > 0 && $refunded >= $paid) {
+            $newStatus = 'refunded';
+        } elseif ($refunded >= $total && $total > 0) {
+            $newStatus = 'refunded';
+        } elseif ($refunded > 0) {
+            $newStatus = 'partially_refunded';
+        } elseif ($paid >= $total && $total > 0) {
+            $newStatus = 'paid';
+        } elseif ($paid > 0) {
+            $newStatus = 'partially_paid';
+        }
+
+        $this->update(['payment_status' => $newStatus]);
+
+        return $newStatus;
+    }
 }
+

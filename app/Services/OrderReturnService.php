@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Models\AuditLog;
 use App\Models\InventoryCostLayer;
 use App\Models\InventoryMovement;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\OrderPayment;
 use App\Models\OrderReturn;
 use App\Models\OrderReturnItem;
 use App\Models\Product;
@@ -14,6 +16,9 @@ use App\Models\Shipment;
 use App\Models\StoreCreditAccount;
 use App\Models\StoreCreditTransaction;
 use App\Models\User;
+use App\Services\AccountingService;
+use App\Services\OrderTimelineService;
+use App\Services\StoreCreditService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -491,6 +496,264 @@ class OrderReturnService
                 'courier_tracking_code' => $shipment->tracking_code,
                 'notes' => 'RTO automatically initiated by ' . strtoupper($shipment->provider) . ' courier webhook update.',
             ]);
+        });
+    }
+
+    /**
+     * Restore physical inventory and FIFO cost layers for an order.
+     *
+     * @param Order $order
+     * @param string $reason
+     * @param User|null $actor
+     * @return float Total restocked inventory valuation/cost
+     */
+    public function restoreOrderInventory(Order $order, string $reason = 'refund', ?User $actor = null): float
+    {
+        $alreadyRestored = InventoryMovement::where('reference_type', 'OrderRestock')
+            ->where('reference_id', (string) $order->id)
+            ->exists();
+
+        if ($alreadyRestored) {
+            return 0.00;
+        }
+
+        $totalCostRestocked = 0.00;
+
+        foreach ($order->items as $item) {
+            if (!$item->product_id) continue;
+
+            $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+            $variant = !empty($item->variant_id)
+                ? ProductVariant::where('id', $item->variant_id)->lockForUpdate()->first()
+                : null;
+
+            if ($product) {
+                // 1. Increment physical stock
+                $product->increment('stock_quantity', $item->quantity);
+                if ($variant) {
+                    $variant->increment('stock_quantity', $item->quantity);
+                }
+
+                // 2. Restore FIFO cost layers
+                $costLayersConsumed = $item->costLayers;
+                $itemTotalCost = 0.00;
+
+                if ($costLayersConsumed && $costLayersConsumed->isNotEmpty()) {
+                    foreach ($costLayersConsumed as $consumed) {
+                        $costLayer = InventoryCostLayer::find($consumed->inventory_cost_layer_id);
+                        if ($costLayer) {
+                            $costLayer->increment('remaining_quantity', $consumed->quantity_consumed);
+                            if ($costLayer->remaining_quantity > 0 && $costLayer->is_depleted) {
+                                $costLayer->update(['is_depleted' => false]);
+                            }
+                        } else {
+                            InventoryCostLayer::create([
+                                'product_id' => $product->id,
+                                'variant_id' => $variant?->id,
+                                'unit_cost' => $consumed->unit_cost,
+                                'initial_quantity' => $consumed->quantity_consumed,
+                                'remaining_quantity' => $consumed->quantity_consumed,
+                                'is_depleted' => false,
+                            ]);
+                        }
+                        $itemTotalCost += round($consumed->quantity_consumed * (float) $consumed->unit_cost, 2);
+                    }
+                } else {
+                    $unitCost = ($item->cogs_unit_cost !== null && (float) $item->cogs_unit_cost > 0)
+                        ? (float) $item->cogs_unit_cost
+                        : (($variant && $variant->cost_price !== null && (float) $variant->cost_price > 0)
+                            ? (float) $variant->cost_price
+                            : ($product->cost_price !== null && (float) $product->cost_price > 0 ? (float) $product->cost_price : 0.00));
+
+                    InventoryCostLayer::create([
+                        'product_id' => $product->id,
+                        'variant_id' => $variant?->id,
+                        'unit_cost' => $unitCost,
+                        'initial_quantity' => $item->quantity,
+                        'remaining_quantity' => $item->quantity,
+                        'is_depleted' => false,
+                    ]);
+
+                    $itemTotalCost += round($item->quantity * $unitCost, 2);
+                }
+
+                $totalCostRestocked += $itemTotalCost;
+
+                // 3. Record auditable movement
+                InventoryMovement::create([
+                    'product_id' => $item->product_id,
+                    'variant_id' => $item->variant_id,
+                    'movement_type' => 'refund_restock',
+                    'quantity' => $item->quantity,
+                    'unit_cost' => (float) ($item->cogs_unit_cost ?? 0.00),
+                    'total_cost' => round($item->quantity * (float) ($item->cogs_unit_cost ?? 0.00), 2),
+                    'balance_after' => $product->fresh()->stock_quantity,
+                    'reference_type' => 'OrderRestock',
+                    'reference_id' => (string) $order->id,
+                    'notes' => "Restocked {$item->quantity} unit(s) due to order {$reason} (#{$order->order_number})",
+                    'user_id' => $actor?->id,
+                ]);
+            }
+        }
+
+        return round($totalCostRestocked, 2);
+    }
+
+    /**
+     * Authoritative direct order refund service.
+     * Enforces payment collection verification, refundable balance limits,
+     * optional FIFO inventory restock, payment ledger recording, double-entry accounting entries, and timeline events.
+     *
+     * @param Order $order
+     * @param array $data ['amount' => float, 'reason' => string, 'restock' => bool, 'refund_method' => string]
+     * @param User|null $actor
+     * @return Order
+     * @throws InvalidArgumentException
+     */
+    public function refundDirectOrder(Order $order, array $data, ?User $actor = null): Order
+    {
+        return DB::transaction(function () use ($order, $data, $actor) {
+            // Lock order for update to ensure concurrency safety
+            $order = Order::where('id', $order->id)->lockForUpdate()->with('items')->firstOrFail();
+
+            // 1. Check whether order is paid
+            $totalPaid = (float) $order->paid_amount;
+            $courierCollected = (float) ($order->amount_collected_courier ?? 0);
+            $effectivePaid = max($totalPaid, $courierCollected);
+
+            // Backward compatibility for orders marked 'paid' prior to ledger introduction
+            if ($effectivePaid <= 0 && $order->payment_status === 'paid') {
+                $effectivePaid = (float) $order->total_amount;
+            }
+
+            if ($effectivePaid <= 0 && !in_array($order->payment_status, ['paid', 'partially_paid'])) {
+                throw new InvalidArgumentException("Cannot issue a refund for an unpaid order. Payment must be collected before issuing a refund.");
+            }
+
+            // 2. Prevent duplicate refund if already fully refunded
+            $alreadyRefunded = (float) ($order->amount_refunded ?? 0);
+            if ($order->payment_status === 'refunded' || ($effectivePaid > 0 && $alreadyRefunded >= $effectivePaid)) {
+                throw new InvalidArgumentException("Order is already fully refunded.");
+            }
+
+            // 3. Verify requested refund amount against remaining collected balance
+            $maxRefundable = round(max(0.00, $effectivePaid - $alreadyRefunded), 2);
+            $refundAmount = isset($data['amount']) ? round((float) $data['amount'], 2) : $maxRefundable;
+
+            if ($refundAmount <= 0) {
+                throw new InvalidArgumentException("Refund amount must be greater than zero.");
+            }
+
+            if ($refundAmount > $maxRefundable) {
+                throw new InvalidArgumentException("Requested refund amount (৳{$refundAmount}) exceeds maximum refundable balance (৳{$maxRefundable}).");
+            }
+
+            $reason = trim($data['reason'] ?? 'Order refunded by administrator');
+            $refundMethod = strtolower($data['refund_method'] ?? 'cash');
+            $restock = !empty($data['restock']);
+
+            // 4. Inventory restock with FIFO cost layer recovery if requested
+            $restockedCost = 0.00;
+            if ($restock) {
+                $restockedCost = $this->restoreOrderInventory($order, 'refund', $actor);
+            }
+
+            // 5. Restore store credit if order originally utilized store credit and full/appropriate refund
+            if (!empty($order->store_credit_amount) && (float) $order->store_credit_amount > 0) {
+                StoreCreditService::refundOrderCredit($order, $reason);
+            }
+
+            // If refund method is store_credit, credit the customer's store credit balance
+            if ($refundMethod === 'store_credit') {
+                $customer = $order->user;
+                if ($customer) {
+                    $creditAccount = StoreCreditAccount::firstOrCreate(
+                        ['user_id' => $customer->id],
+                        ['balance' => 0.00, 'total_credited' => 0.00, 'total_debited' => 0.00]
+                    );
+                    $newBalance = round((float) $creditAccount->balance + $refundAmount, 2);
+                    $creditAccount->update([
+                        'balance' => $newBalance,
+                        'total_credited' => round((float) $creditAccount->total_credited + $refundAmount, 2),
+                    ]);
+                    StoreCreditTransaction::create([
+                        'account_id' => $creditAccount->id,
+                        'user_id' => $customer->id,
+                        'type' => 'refund',
+                        'amount' => $refundAmount,
+                        'balance_after' => $newBalance,
+                        'reason' => "Refund for Order #{$order->order_number}: {$reason}",
+                        'reference_type' => 'Order',
+                        'reference_id' => (string) $order->id,
+                        'created_by_user_id' => $actor?->id,
+                    ]);
+                }
+            }
+
+            // 6. Record entry in normalized payment ledger
+            $order->payments()->create([
+                'payment_number' => OrderPayment::generatePaymentNumber(),
+                'payment_method' => $refundMethod,
+                'provider' => 'manual',
+                'amount' => $refundAmount,
+                'currency' => 'BDT',
+                'status' => 'completed',
+                'type' => 'refund',
+                'collected_at' => now(),
+                'notes' => $reason,
+                'created_by_user_id' => $actor?->id,
+            ]);
+
+            // 7. Update order refund amount and recalculate payment_status
+            $newTotalRefunded = round($alreadyRefunded + $refundAmount, 2);
+            $order->update([
+                'amount_refunded' => $newTotalRefunded,
+                'notes' => ($order->notes ? $order->notes . "\n" : "") . "Refunded ৳{$refundAmount}: {$reason}" . ($restock ? " (Restocked)" : ""),
+            ]);
+
+            $newPaymentStatus = $order->recalculatePaymentStatus();
+
+            // If fully refunded, mark order_status as refunded
+            if ($newPaymentStatus === 'refunded') {
+                $order->update(['order_status' => 'refunded']);
+            }
+
+            // 8. Post double-entry contra-revenue accounting journal
+            AccountingService::postOrderDirectRefund(
+                $order,
+                $refundAmount,
+                $refundMethod,
+                $restockedCost,
+                $actor,
+                $reason
+            );
+
+            // 9. Record timeline event
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'refunded',
+                title: "Order Refunded (৳" . number_format($refundAmount, 2) . ")",
+                description: "Refund of ৳" . number_format($refundAmount, 2) . " processed via {$refundMethod}. Reason: {$reason}" . ($restock ? " (Inventory restocked)" : ""),
+                actorName: $actor?->name ?? 'Admin',
+                iconType: 'dollar',
+                metadata: [
+                    'refund_amount' => $refundAmount,
+                    'refund_method' => $refundMethod,
+                    'restock' => $restock,
+                    'remaining_refundable' => max(0.00, round($effectivePaid - $newTotalRefunded, 2)),
+                ]
+            );
+
+            // 10. Audit log
+            AuditLog::log(
+                $actor,
+                'order.refunded',
+                'Order',
+                $order->id,
+                "Order {$order->order_number} refunded ৳{$refundAmount} via {$refundMethod}. Reason: {$reason}"
+            );
+
+            return $order->fresh(['items', 'payments']);
         });
     }
 }

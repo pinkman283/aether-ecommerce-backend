@@ -649,6 +649,22 @@ class AccountingService
             'memo' => "COD settlement for Order #{$shipment->order?->order_number}",
         ];
 
+        if ($shipment->order) {
+            $shipment->order->payments()->create([
+                'payment_number' => \App\Models\OrderPayment::generatePaymentNumber(),
+                'payment_method' => 'cash_on_delivery',
+                'provider' => $shipment->provider ?: 'courier',
+                'transaction_id' => (string) ($shipment->consignment_id ?: $shipment->tracking_code),
+                'amount' => $totalCollected,
+                'currency' => 'BDT',
+                'status' => 'completed',
+                'type' => 'collection',
+                'collected_at' => now(),
+                'notes' => "Courier remittance reconciled for consignment #{$shipment->consignment_id}",
+            ]);
+            $shipment->order->recalculatePaymentStatus();
+        }
+
         $header = [
             'entry_date' => now()->toDateString(),
             'reference_type' => 'CourierRemittance',
@@ -887,6 +903,88 @@ class AccountingService
             'reference_id' => $return->id,
             'reference_number' => "QC-{$return->return_number}",
             'narration' => "Inventory QC restock & write-off valuation for Return #{$return->return_number}",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post journal entry for a direct Order Refund from Admin.
+     * Accrual Accounting:
+     * Debits: Account 4095 (Sales Returns & Refunds - Contra Revenue)
+     * Credits: Cash/Bank/MFS/Store Credit (Account 1010, 1020, 1030, or 2020)
+     * Optional Inventory Restock:
+     * Debits: Account 1200 (Merchandise Inventory)
+     * Credits: Account 5010/5020 (COGS)
+     */
+    public static function postOrderDirectRefund(
+        Order $order,
+        float $refundAmount,
+        string $refundMethod = 'cash',
+        float $restockedCost = 0.00,
+        ?User $actor = null,
+        ?string $reason = null
+    ): ?JournalEntry {
+        $refundAmount = round($refundAmount, 2);
+        if ($refundAmount <= 0) {
+            return null;
+        }
+
+        $lines = [];
+
+        // 1. Debit Sales Returns & Refunds (Contra-Revenue)
+        $lines[] = [
+            'account_code' => '4095', // Sales Returns & Refunds
+            'debit' => $refundAmount,
+            'credit' => 0.00,
+            'memo' => "Direct refund on Order #{$order->order_number}: " . ($reason ?: 'Customer refund'),
+        ];
+
+        // 2. Credit the funding account
+        $method = strtolower($refundMethod);
+        $creditAccountCode = '1010'; // Cash on Hand default
+        if ($method === 'store_credit') {
+            $creditAccountCode = '2020'; // Customer Advances & Store Credit
+        } elseif (in_array($method, ['bkash', 'nagad', 'rocket', 'mfs'])) {
+            $creditAccountCode = '1030'; // Digital Wallets
+        } elseif (in_array($method, ['bank', 'bank_transfer', 'card'])) {
+            $creditAccountCode = '1020'; // Bank Account
+        }
+
+        $lines[] = [
+            'account_code' => $creditAccountCode,
+            'debit' => 0.00,
+            'credit' => $refundAmount,
+            'memo' => "Refund payout via {$method} for Order #{$order->order_number}",
+        ];
+
+        // 3. If restocked cost > 0, restore inventory & reverse COGS
+        $restockedCost = round($restockedCost, 2);
+        if ($restockedCost > 0) {
+            $cogsCode = ($order->order_source === 'pos') ? '5020' : '5010';
+            $lines[] = [
+                'account_code' => '1200', // Merchandise Inventory
+                'debit' => $restockedCost,
+                'credit' => 0.00,
+                'memo' => "Restocked inventory cost for refunded Order #{$order->order_number}",
+            ];
+            $lines[] = [
+                'account_code' => $cogsCode, // COGS
+                'debit' => 0.00,
+                'credit' => $restockedCost,
+                'memo' => "COGS relief for refunded Order #{$order->order_number}",
+            ];
+        }
+
+        $refSuffix = time();
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'OrderRefund',
+            'reference_id' => $order->id,
+            'reference_number' => "REF-{$order->order_number}-{$refSuffix}",
+            'narration' => "Direct refund of ৳{$refundAmount} for Order #{$order->order_number}" . ($reason ? " ({$reason})" : ""),
+            'created_by_user_id' => $actor?->id,
             'status' => 'posted',
         ];
 

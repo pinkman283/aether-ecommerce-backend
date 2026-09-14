@@ -22,9 +22,9 @@ class DatabaseSeeder extends Seeder
     {
         // 1. Create Users with Distinct Roles
         $superAdmin = User::create([
-            'name' => 'Marcus Aurelius (Super Admin)',
-            'email' => 'superadmin@ecommerce.test',
-            'password' => Hash::make('password123'),
+            'name' => 'Super Admin',
+            'email' => 'ss@gmail.com',
+            'password' => Hash::make('ss112233'),
             'role' => 'super_admin',
             'status' => 'active',
             'phone' => '+1 (555) 111-2222',

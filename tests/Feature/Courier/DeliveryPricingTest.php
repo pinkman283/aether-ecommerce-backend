@@ -19,6 +19,7 @@ class DeliveryPricingTest extends TestCase
             'name' => 'Shipping Rate Test Product',
             'slug' => 'shipping-rate-test-product-' . uniqid(),
             'price' => 500,
+            'cost_price' => 300.00,
             'stock_quantity' => 10,
             'is_active' => true,
         ]);
@@ -85,8 +86,8 @@ class DeliveryPricingTest extends TestCase
         $this->assertNotNull($this->createdOrder);
         // Server authoritative inside_dhaka rate is 60, not 5
         $this->assertEquals(60.0, (float) $this->createdOrder->shipping_amount);
-        // Subtotal: 2 * 500 = 1000 + 60 shipping = 1060 total
-        $this->assertEquals(1060.0, (float) $this->createdOrder->total_amount);
+        // Subtotal: 2 * 500 = 1000 + 60 shipping + tax = total
+        $this->assertEquals(1060.0 + (float) $this->createdOrder->tax_amount, (float) $this->createdOrder->total_amount);
     }
 
     public function test_order_creation_calculates_authoritative_shipping_for_outside_dhaka(): void
@@ -119,6 +120,6 @@ class DeliveryPricingTest extends TestCase
         $this->assertNotNull($this->createdOrder);
         // Outside dhaka authoritative rate is 130
         $this->assertEquals(130.0, (float) $this->createdOrder->shipping_amount);
-        $this->assertEquals(630.0, (float) $this->createdOrder->total_amount);
+        $this->assertEquals(630.0 + (float) $this->createdOrder->tax_amount, (float) $this->createdOrder->total_amount);
     }
 }

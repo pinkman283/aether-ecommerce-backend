@@ -8,6 +8,8 @@ return new class extends Migration
 {
     public function up(): void
     {
+        Schema::disableForeignKeyConstraints();
+
         // 1. Vendors
         Schema::create('vendors', function (Blueprint $table) {
             $table->id();
@@ -132,6 +134,8 @@ return new class extends Migration
             $table->decimal('total_cost', 12, 2);
             $table->timestamps();
         });
+
+        Schema::enableForeignKeyConstraints();
     }
 
     public function down(): void

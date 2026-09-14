@@ -50,6 +50,7 @@ class OrderCheckoutTest extends TestCase
             'slug' => 'numpad-' . uniqid(),
             'sku' => 'NP-' . uniqid(),
             'price' => 800.00,
+            'cost_price' => 500.00,
             'stock_quantity' => 20,
             'description' => 'Test numpad',
             'category_id' => $category->id,
@@ -60,6 +61,7 @@ class OrderCheckoutTest extends TestCase
             'name' => 'RGB Black',
             'sku' => $product->sku . '-BLK',
             'price_modifier' => 50.00,
+            'cost_price' => 500.00,
             'stock_quantity' => 15,
         ]);
 

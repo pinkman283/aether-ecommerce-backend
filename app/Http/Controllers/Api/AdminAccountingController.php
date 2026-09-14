@@ -580,6 +580,23 @@ class AdminAccountingController extends Controller
             'created_by_user_id' => $request->user()?->id,
         ]);
 
+        // Record in normalized payment ledger
+        $order->payments()->create([
+            'payment_number' => \App\Models\OrderPayment::generatePaymentNumber(),
+            'payment_method' => $validated['payment_method'],
+            'provider' => 'manual',
+            'transaction_id' => $validated['reference_number'] ?? null,
+            'amount' => $validated['amount'],
+            'currency' => 'BDT',
+            'status' => 'completed',
+            'type' => ((float) $order->paid_amount + (float) $validated['amount'] >= (float) $order->total_amount) ? 'full_payment' : 'partial_payment',
+            'collected_at' => $validated['payment_date'] ?? now(),
+            'notes' => $validated['notes'] ?? null,
+            'created_by_user_id' => $request->user()?->id,
+        ]);
+
+        $order->recalculatePaymentStatus();
+
         $journalEntry = AccountingService::postCustomerPayment($payment);
 
         return response()->json([

@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminBlockedIpController;
 use App\Http\Controllers\Api\AdminBlogController;
 use App\Http\Controllers\Api\AdminBrandController;
+use App\Http\Controllers\Api\AdminBrandLogoController;
 use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminColorController;
 use App\Http\Controllers\Api\AdminController;
@@ -515,6 +516,17 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/theme', [AdminThemeController::class, 'index']);
     Route::put('/theme', [AdminThemeController::class, 'update']);
     Route::post('/theme/reset', [AdminThemeController::class, 'resetDefaults']);
+
+    // Extensible Brand Logos & Separated Favicon Management
+    Route::prefix('branding')->group(function () {
+        Route::get('/logos', [AdminBrandLogoController::class, 'index']);
+        Route::post('/logos', [AdminBrandLogoController::class, 'store']);
+        Route::put('/logos/{id}', [AdminBrandLogoController::class, 'update']);
+        Route::delete('/logos/{id}', [AdminBrandLogoController::class, 'destroy']);
+        Route::post('/upload', [AdminBrandLogoController::class, 'upload']);
+        Route::put('/favicon', [AdminBrandLogoController::class, 'updateFavicon']);
+        Route::delete('/favicon', [AdminBrandLogoController::class, 'removeFavicon']);
+    });
 
     // Dynamic Homepage Sections Builder
     Route::prefix('homepage/sections')->group(function () {

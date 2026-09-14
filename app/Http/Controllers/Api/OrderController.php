@@ -9,7 +9,9 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use App\Services\IdempotencyService;
 use App\Services\PromotionEngine;
+use App\Services\ShippingZoneResolver;
 use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -107,226 +109,258 @@ class OrderController extends Controller
             ], 403);
         }
 
-        $validated = $request->validate([
-            'customer_name' => 'required|string|max:255',
-            'customer_email' => 'required|email|max:255',
-            'customer_phone' => 'nullable|string|max:30',
-            'shipping_address' => 'required|array',
-            'shipping_address.address_line1' => 'required|string',
-            'shipping_address.city' => 'required|string',
-            'shipping_address.postal_code' => 'required|string',
-            'shipping_address.country' => 'required|string',
-            'billing_address' => 'nullable|array',
-            'shipping_city_id' => 'nullable|integer',
-            'shipping_zone_id' => 'nullable|integer',
-            'shipping_area_id' => 'nullable|integer',
-            'payment_method' => 'required|in:cash_on_delivery,cod',
-            'shipping_method' => 'nullable|string|max:100',
-            'coupon_code' => 'nullable|string',
-            'claimed_coupon_id' => 'nullable|integer',
-            'use_store_credit' => 'nullable|boolean',
-            'store_credit_amount' => 'nullable|numeric|min:0',
-            'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|exists:products,id',
-            'items.*.variant_id' => 'nullable|exists:product_variants,id',
-            'items.*.quantity' => 'required|integer|min:1',
-        ]);
-
-        // 2. Customer Account Status & Guest Unification
+        $idempotencyKey = $request->header('X-Idempotency-Key') ?? $request->input('idempotency_key');
         $user = $request->user('sanctum');
 
-        if ($user) {
-            if ($user->isBlocked() || $user->isSuspended()) {
-                return response()->json([
-                    'message' => 'Account access restricted. Please contact customer support.',
-                ], 403);
-            }
-            $customerRecord = $user;
-        } else {
-            $email = strtolower(trim($validated['customer_email']));
-            $existingCustomer = User::where('role', 'customer')->where('email', $email)->first();
+        return IdempotencyService::run($idempotencyKey, $request->all(), function () use ($request, $user, $clientIp) {
+            $validated = $request->validate([
+                'customer_name' => 'required|string|max:255',
+                'customer_email' => 'required|email|max:255',
+                'customer_phone' => 'nullable|string|max:30',
+                'shipping_address' => 'required|array',
+                'shipping_address.address_line1' => 'required|string',
+                'shipping_address.city' => 'required|string',
+                'shipping_address.postal_code' => 'nullable|string',
+                'shipping_address.country' => 'nullable|string',
+                'billing_address' => 'nullable|array',
+                'shipping_city_id' => 'nullable|integer',
+                'shipping_zone_id' => 'nullable|integer',
+                'shipping_area_id' => 'nullable|integer',
+                'payment_method' => 'required|in:cash_on_delivery,cod',
+                'shipping_method' => 'nullable|string|max:100',
+                'coupon_code' => 'nullable|string',
+                'claimed_coupon_id' => 'nullable|integer',
+                'use_store_credit' => 'nullable|boolean',
+                'store_credit_amount' => 'nullable|numeric|min:0',
+                'items' => 'required|array|min:1',
+                'items.*.product_id' => 'required|exists:products,id',
+                'items.*.variant_id' => 'nullable|exists:product_variants,id',
+                'items.*.quantity' => 'required|integer|min:1',
+            ]);
 
-            if ($existingCustomer) {
-                if ($existingCustomer->isBlocked() || $existingCustomer->isSuspended()) {
-                    return response()->json([
-                        'message' => 'Account access restricted. Please contact customer support.',
-                    ], 403);
+            // Ensure address defaults
+            $shippingAddress = $validated['shipping_address'];
+            $shippingAddress['country'] = $shippingAddress['country'] ?? 'Bangladesh';
+            $shippingAddress['postal_code'] = $shippingAddress['postal_code'] ?? '1000';
+            $validated['shipping_address'] = $shippingAddress;
+
+            // 2. Customer Account Status & Guest Unification
+            if ($user) {
+                if ($user->isBlocked() || $user->isSuspended()) {
+                    abort(403, 'Account access restricted. Please contact customer support.');
                 }
-                $customerRecord = $existingCustomer;
+                $customerRecord = $user;
             } else {
-                $customerRecord = User::create([
-                    'name' => $validated['customer_name'],
-                    'email' => $email,
-                    'phone' => $validated['customer_phone'] ?? null,
-                    'role' => 'customer',
-                    'customer_type' => 'guest',
-                    'status' => 'active',
-                    'password' => \Illuminate\Support\Facades\Hash::make(Str::random(32)),
-                ]);
-            }
-        }
+                $email = strtolower(trim($validated['customer_email']));
+                $existingCustomer = User::where('role', 'customer')->where('email', $email)->first();
 
-        $result = DB::transaction(function () use ($request, $validated, $customerRecord, $clientIp) {
-            $subtotal = 0.00;
-            $itemsToCreate = [];
-
-            foreach ($validated['items'] as $itemData) {
-                // Concurrency-safe row locking
-                $product = Product::where('id', $itemData['product_id'])->lockForUpdate()->firstOrFail();
-                $unitPrice = (float) $product->price;
-                $variantName = null;
-                $productImage = $product->primaryImage?->image_url ?? $product->images->first()?->image_url;
-
-                // Enforce stock availability
-                if ($product->stock_quantity < $itemData['quantity']) {
-                    throw \Illuminate\Validation\ValidationException::withMessages([
-                        'items' => ["Insufficient inventory for product '{$product->name}'. Only {$product->stock_quantity} unit(s) available."],
+                if ($existingCustomer) {
+                    if ($existingCustomer->isBlocked() || $existingCustomer->isSuspended()) {
+                        abort(403, 'Account access restricted. Please contact customer support.');
+                    }
+                    $customerRecord = $existingCustomer;
+                } else {
+                    $customerRecord = User::create([
+                        'name' => $validated['customer_name'],
+                        'email' => $email,
+                        'phone' => $validated['customer_phone'] ?? null,
+                        'role' => 'customer',
+                        'customer_type' => 'guest',
+                        'status' => 'active',
+                        'password' => \Illuminate\Support\Facades\Hash::make(Str::random(32)),
                     ]);
                 }
+            }
 
-                $variant = null;
-                if (!empty($itemData['variant_id'])) {
-                    $variant = ProductVariant::where('id', $itemData['variant_id'])->lockForUpdate()->firstOrFail();
-                    
-                    if ($variant->stock_quantity < $itemData['quantity']) {
+            $result = DB::transaction(function () use ($request, $validated, $customerRecord, $clientIp) {
+                $subtotal = 0.00;
+                $itemsToCreate = [];
+
+                foreach ($validated['items'] as $itemData) {
+                    // Concurrency-safe row locking
+                    $product = Product::where('id', $itemData['product_id'])->lockForUpdate()->firstOrFail();
+
+                    // Catalog Integrity: Active Product check
+                    if (!$product->is_active) {
                         throw \Illuminate\Validation\ValidationException::withMessages([
-                            'items' => ["Insufficient inventory for variant '{$variant->name}'. Only {$variant->stock_quantity} unit(s) available."],
+                            'items' => ["Product '{$product->name}' is currently inactive and cannot be ordered."],
                         ]);
                     }
 
-                    $unitPrice += (float) $variant->price_modifier;
-                    $variantName = $variant->name;
+                    // Enforce stock availability
+                    if ($product->stock_quantity < $itemData['quantity']) {
+                        throw \Illuminate\Validation\ValidationException::withMessages([
+                            'items' => ["Insufficient inventory for product '{$product->name}'. Only {$product->stock_quantity} unit(s) available."],
+                        ]);
+                    }
+
+                    $variant = null;
+                    $unitPrice = (float) $product->price;
+                    $variantName = null;
+
+                    if (!empty($itemData['variant_id'])) {
+                        $variant = ProductVariant::where('id', $itemData['variant_id'])->lockForUpdate()->firstOrFail();
+
+                        // Catalog Integrity: Variant must belong to product
+                        if ((int) $variant->product_id !== (int) $product->id) {
+                            throw \Illuminate\Validation\ValidationException::withMessages([
+                                'items' => ["Selected variant does not belong to product '{$product->name}'."],
+                            ]);
+                        }
+
+                        if ($variant->stock_quantity < $itemData['quantity']) {
+                            throw \Illuminate\Validation\ValidationException::withMessages([
+                                'items' => ["Insufficient inventory for variant '{$variant->name}'. Only {$variant->stock_quantity} unit(s) available."],
+                            ]);
+                        }
+
+                        $unitPrice += (float) $variant->price_modifier;
+                        $variantName = $variant->name;
+                    }
+
+                    $totalItemPrice = round($unitPrice * $itemData['quantity'], 2);
+                    $subtotal += $totalItemPrice;
+
+                    $productImage = $product->primaryImage?->image_url ?? $product->images->first()?->image_url;
+
+                    $itemsToCreate[] = [
+                        'product_id' => $product->id,
+                        'variant_id' => $itemData['variant_id'] ?? null,
+                        'product_name' => $product->name,
+                        'product_sku' => $variant ? $variant->sku : $product->sku,
+                        'product_image' => $productImage,
+                        'variant_name' => $variantName,
+                        'unit_price' => $unitPrice,
+                        'quantity' => $itemData['quantity'],
+                        'total_price' => $totalItemPrice,
+                    ];
                 }
 
-                $totalItemPrice = $unitPrice * $itemData['quantity'];
-                $subtotal += $totalItemPrice;
+                // Authoritative server-side Shipping Zone & Rate Resolution
+                try {
+                    $shippingCalc = ShippingZoneResolver::resolveAndCalculate(
+                        $validated['shipping_address'] ?? [],
+                        $subtotal,
+                        $validated['shipping_method'] ?? null
+                    );
+                } catch (\InvalidArgumentException $e) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'shipping_method' => [$e->getMessage()],
+                    ]);
+                }
 
+                $shippingMethod = $shippingCalc['effective_method'];
+                $baseShipping = $shippingCalc['shipping_fee'];
 
-                $itemsToCreate[] = [
-                    'product_id' => $product->id,
-                    'variant_id' => $itemData['variant_id'] ?? null,
-                    'product_name' => $product->name,
-                    'product_sku' => $variant ? $variant->sku : $product->sku,
-                    'product_image' => $productImage,
-                    'variant_name' => $variantName,
-                    'unit_price' => $unitPrice,
-                    'quantity' => $itemData['quantity'],
-                    'total_price' => $totalItemPrice,
-                ];
-            }
+                $eval = PromotionEngine::evaluateCart(
+                    $validated['items'],
+                    $customerRecord,
+                    $validated['customer_email'],
+                    $validated['coupon_code'] ?? null,
+                    $validated['claimed_coupon_id'] ?? null,
+                    $baseShipping,
+                    $validated['payment_method']
+                );
 
-            // Authoritative server-side PromotionEngine evaluation
-            $shippingMethod = $validated['shipping_method'] ?? 'inside_dhaka';
-            $baseShipping = self::calculateAuthoritativeShippingRate($shippingMethod, $subtotal, $validated['shipping_address'] ?? []);
+                // If customer explicitly entered a coupon code or claim that is invalid, reject
+                if ((!empty($validated['coupon_code']) || !empty($validated['claimed_coupon_id'])) && !$eval['valid']) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'coupon_code' => [$eval['message'] ?: 'Provided promo code or claimed coupon is not valid for this order.'],
+                    ]);
+                }
 
-            $eval = PromotionEngine::evaluateCart(
-                $validated['items'],
-                $customerRecord,
-                $validated['customer_email'],
-                $validated['coupon_code'] ?? null,
-                $validated['claimed_coupon_id'] ?? null,
-                $baseShipping,
-                $validated['payment_method']
-            );
+                $discount = $eval['order_discount'];
+                $shipping = $eval['shipping_amount'];
+                $tax = $eval['tax_amount'];
+                $total = $eval['grand_total'];
+                $primaryPromoId = $eval['applied_promotions'][0]['promotion_id'] ?? null;
 
-            // If customer explicitly entered a coupon code or claim that is invalid, reject
-            if ((!empty($validated['coupon_code']) || !empty($validated['claimed_coupon_id'])) && !$eval['valid']) {
-                throw \Illuminate\Validation\ValidationException::withMessages([
-                    'coupon_code' => [$eval['message'] ?: 'Provided promo code or claimed coupon is not valid for this order.'],
-                ]);
-            }
+                $orderNumber = 'ORD-' . date('Y') . '-' . strtoupper(Str::random(6));
 
-            $discount = $eval['order_discount'];
-            $shipping = $eval['shipping_amount'];
-            $tax = $eval['tax_amount'];
-            $total = $eval['grand_total'];
-            $primaryPromoId = $eval['applied_promotions'][0]['promotion_id'] ?? null;
-
-            $orderNumber = 'ORD-' . date('Y') . '-' . strtoupper(Str::random(6));
-
-            $order = Order::create([
-                'user_id' => $customerRecord->id,
-                'order_number' => $orderNumber,
-                'order_source' => 'online',
-                'customer_name' => $validated['customer_name'],
-                'customer_email' => $validated['customer_email'],
-                'customer_phone' => $validated['customer_phone'] ?? null,
-                'shipping_address' => $validated['shipping_address'],
-                'shipping_city_id' => $validated['shipping_city_id'] ?? null,
-                'shipping_zone_id' => $validated['shipping_zone_id'] ?? null,
-                'shipping_area_id' => $validated['shipping_area_id'] ?? null,
-                'billing_address' => $validated['billing_address'] ?? $validated['shipping_address'],
-                'subtotal' => $subtotal,
-                'tax_amount' => $tax,
-                'shipping_amount' => $shipping,
-                'shipping_method' => $shippingMethod,
-                'discount_amount' => $discount,
-                'store_credit_amount' => 0.00,
-                'total_amount' => $total,
-                'payment_status' => 'pending',
-                'payment_method' => 'cash_on_delivery',
-                'payment_transaction_id' => null,
-                'order_status' => 'pending',
-                'tracking_code' => null,
-                'carrier' => null,
-                'coupon_code' => $validated['coupon_code'] ?? null,
-                'promotion_id' => $primaryPromoId,
-                'promotion_discount_details' => $eval['applied_promotions'],
-                'ip_address' => $clientIp,
-            ]);
-
-            // If customer requested store credit application, deduct atomically
-            if (!empty($validated['use_store_credit'])) {
-                $requestedCredit = (float) ($validated['store_credit_amount'] ?? $total);
-                StoreCreditService::applyToOrder($order, $requestedCredit, $customerRecord);
-            }
-
-            // Record authoritative promotion redemption audit records
-            PromotionEngine::recordOrderRedemption($order, $eval, $customerRecord, $validated['customer_email']);
-
-            foreach ($itemsToCreate as $item) {
-                $order->items()->create($item);
-            }
-
-            // Log IP record
-            \App\Models\CustomerIpLog::record($customerRecord, $clientIp, 'order_created', $order->id);
-
-            // Execute FIFO Costing Layer Consumption & Compute COGS
-            $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
-
-            // Post Real Double-Entry Sale Journal Entry to General Ledger
-            \App\Services\AccountingService::postOrderSale($order);
-
-            // Update risk score
-            \App\Services\CustomerRiskService::calculateCustomerRisk($customerRecord);
-
-            // Record Initial Order Placed Timeline Milestone
-            \App\Services\OrderTimelineService::recordEvent(
-                order: $order,
-                eventType: 'order_placed',
-                title: 'Order Placed (Cash on Delivery)',
-                description: "Order #{$order->order_number} placed by {$order->customer_name} for " . count($itemsToCreate) . " item(s). Collectable COD: ৳" . number_format($order->total_amount, 2),
-                actorName: $order->customer_name ?: 'Customer',
-                iconType: 'check',
-                metadata: [
-                    'order_number' => $order->order_number,
-                    'payment_method' => 'cash_on_delivery',
+                $order = Order::create([
+                    'user_id' => $customerRecord->id,
+                    'order_number' => $orderNumber,
+                    'order_source' => 'online',
+                    'customer_name' => $validated['customer_name'],
+                    'customer_email' => $validated['customer_email'],
+                    'customer_phone' => $validated['customer_phone'] ?? null,
+                    'shipping_address' => $validated['shipping_address'],
+                    'shipping_city_id' => $validated['shipping_city_id'] ?? null,
+                    'shipping_zone_id' => $validated['shipping_zone_id'] ?? null,
+                    'shipping_area_id' => $validated['shipping_area_id'] ?? null,
+                    'billing_address' => $validated['billing_address'] ?? $validated['shipping_address'],
                     'subtotal' => $subtotal,
-                    'shipping' => $shipping,
-                    'total' => $total,
-                ]
-            );
+                    'tax_amount' => $tax,
+                    'shipping_amount' => $shipping,
+                    'shipping_method' => $shippingMethod,
+                    'discount_amount' => $discount,
+                    'store_credit_amount' => 0.00,
+                    'total_amount' => $total,
+                    'payment_status' => 'pending',
+                    'payment_method' => 'cash_on_delivery',
+                    'payment_transaction_id' => null,
+                    'order_status' => 'pending',
+                    'tracking_code' => null,
+                    'carrier' => null,
+                    'coupon_code' => $validated['coupon_code'] ?? null,
+                    'promotion_id' => $primaryPromoId,
+                    'promotion_discount_details' => $eval['applied_promotions'],
+                    'ip_address' => $clientIp,
+                ]);
 
-            // Send customer confirmation email & SMS
-            \App\Services\CustomerNotificationService::sendOrderConfirmation($order);
+                // If customer requested store credit application, deduct atomically
+                if (!empty($validated['use_store_credit'])) {
+                    $requestedCredit = (float) ($validated['store_credit_amount'] ?? $total);
+                    StoreCreditService::applyToOrder($order, $requestedCredit, $customerRecord);
+                }
 
-            return $order->load('items');
-        });
+                // Record authoritative promotion redemption audit records
+                PromotionEngine::recordOrderRedemption($order, $eval, $customerRecord, $validated['customer_email']);
 
-        return response()->json([
-            'message' => 'Order created successfully',
-            'order' => $result,
-        ], 201);
+                foreach ($itemsToCreate as $item) {
+                    $order->items()->create($item);
+                }
+
+                // Log IP record
+                \App\Models\CustomerIpLog::record($customerRecord, $clientIp, 'order_created', $order->id);
+
+                // Execute FIFO Costing Layer Consumption & Compute COGS
+                $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
+
+                // Post Real Double-Entry Sale Journal Entry to General Ledger
+                \App\Services\AccountingService::postOrderSale($order);
+
+                // Update risk score
+                \App\Services\CustomerRiskService::calculateCustomerRisk($customerRecord);
+
+                // Record Initial Order Placed Timeline Milestone
+                \App\Services\OrderTimelineService::recordEvent(
+                    order: $order,
+                    eventType: 'order_placed',
+                    title: 'Order Placed (Cash on Delivery)',
+                    description: "Order #{$order->order_number} placed by {$order->customer_name} for " . count($itemsToCreate) . " item(s). Collectable COD: ৳" . number_format($order->total_amount, 2),
+                    actorName: $order->customer_name ?: 'Customer',
+                    iconType: 'check',
+                    metadata: [
+                        'order_number' => $order->order_number,
+                        'payment_method' => 'cash_on_delivery',
+                        'subtotal' => $subtotal,
+                        'shipping' => $shipping,
+                        'total' => $total,
+                    ]
+                );
+
+                // Send customer confirmation email & SMS
+                \App\Services\CustomerNotificationService::sendOrderConfirmation($order);
+
+                return $order->load('items');
+            });
+
+            return response()->json([
+                'message' => 'Order created successfully',
+                'order' => $result,
+            ], 201);
+        }, $user?->id);
     }
 
     /**
@@ -334,28 +368,27 @@ class OrderController extends Controller
      */
     public static function calculateAuthoritativeShippingRate(string $method, float $subtotal, array $address = []): float
     {
-        $zonesRaw = \App\Models\Setting::get('shipping_zones');
-        $zones = is_string($zonesRaw) ? json_decode($zonesRaw, true) : (is_array($zonesRaw) ? $zonesRaw : []);
+        try {
+            if (!empty($address)) {
+                $calc = ShippingZoneResolver::resolveAndCalculate($address, $subtotal, $method);
+                return $calc['shipping_fee'];
+            }
+        } catch (\InvalidArgumentException $e) {
+            // fall back to zone lookup
+        }
 
-        if (is_array($zones) && !empty($zones)) {
-            foreach ($zones as $zone) {
-                if (($zone['id'] ?? '') === $method || ($zone['name'] ?? '') === $method) {
-                    $threshold = (float) ($zone['free_threshold'] ?? 0);
-                    if ($threshold > 0 && $subtotal >= $threshold) {
-                        return 0.00;
-                    }
-                    return (float) ($zone['rate'] ?? 60.00);
+        $zones = ShippingZoneResolver::getConfiguredZones();
+        foreach ($zones as $zone) {
+            if (($zone['id'] ?? '') === $method || ($zone['name'] ?? '') === $method) {
+                $threshold = (float) ($zone['free_threshold'] ?? 0);
+                if ($threshold > 0 && $subtotal >= $threshold) {
+                    return 0.00;
                 }
+                return (float) ($zone['rate'] ?? 60.00);
             }
         }
 
-        // Fallback based on city or method
-        $city = strtolower(trim($address['city'] ?? ''));
-        if (str_contains($method, 'outside') || (!empty($city) && !str_contains($city, 'dhaka'))) {
-            return $subtotal >= 6000 ? 0.00 : 130.00;
-        }
-
-        return $subtotal >= 3000 ? 0.00 : 60.00;
+        return str_contains($method, 'outside') ? 130.00 : 60.00;
     }
 
     /**
@@ -363,29 +396,7 @@ class OrderController extends Controller
      */
     public function shippingZones(): JsonResponse
     {
-        $zonesRaw = \App\Models\Setting::get('shipping_zones');
-        $zones = is_string($zonesRaw) ? json_decode($zonesRaw, true) : (is_array($zonesRaw) ? $zonesRaw : []);
-
-        $hasOutside = false;
-        if (is_array($zones)) {
-            foreach ($zones as $z) {
-                if (($z['id'] ?? '') === 'outside_dhaka') {
-                    $hasOutside = true;
-                    break;
-                }
-            }
-        }
-
-        if (empty($zones) || !$hasOutside) {
-            $zones = [
-                ['id' => 'inside_dhaka', 'name' => 'Inside Dhaka Metro', 'rate' => 60, 'duration' => '24-48 Hours', 'free_threshold' => 3000, 'is_active' => true],
-                ['id' => 'dhaka_suburbs', 'name' => 'Dhaka Suburbs (Gazipur, Savar, Narayanganj)', 'rate' => 100, 'duration' => '48-72 Hours', 'free_threshold' => 5000, 'is_active' => true],
-                ['id' => 'outside_dhaka', 'name' => 'Outside Dhaka (Nationwide)', 'rate' => 130, 'duration' => '3-5 Business Days', 'free_threshold' => 6000, 'is_active' => true],
-                ['id' => 'express_sameday', 'name' => 'Express Same-Day Dispatch', 'rate' => 200, 'duration' => 'Same Day (Before 2 PM)', 'free_threshold' => 0, 'is_active' => true],
-            ];
-            \App\Models\Setting::set('shipping_zones', json_encode($zones));
-        }
-
+        $zones = ShippingZoneResolver::getConfiguredZones();
         return response()->json(['zones' => $zones]);
     }
 }

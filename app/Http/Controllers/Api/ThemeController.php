@@ -30,6 +30,21 @@ class ThemeController extends Controller
                 };
             };
 
+            $logoPlacements = [];
+            try {
+                $rawPlacements = \App\Models\BrandLogoPlacement::with('logo')->get();
+                foreach ($rawPlacements as $bp) {
+                    if ($bp->logo && !empty($bp->logo->image_url)) {
+                        $logoPlacements[$bp->placement] = $bp->logo->image_url;
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Ignore if tables not ready
+            }
+
+            $effectiveNavbarLogo = $logoPlacements['navbar'] ?? $get('store_brand_logo', '');
+            $effectiveSplitLogo = $logoPlacements['split_reveal'] ?? $get('split_reveal_logo', '');
+
             return [
                 'theme_primary_color' => $get('theme_primary_color', '#005826'),
                 'theme_secondary_color' => $get('theme_secondary_color', '#2da54b'),
@@ -85,7 +100,9 @@ class ThemeController extends Controller
                 'vat_rate' => Setting::getVatRate(),
                 'store_brand_name' => $brandName = $get('store_brand_name', 'INHALIQ'),
                 'store_brand_tagline' => $get('store_brand_tagline', 'ELEVATE EVERY INHALE'),
-                'store_brand_logo' => $get('store_brand_logo', ''),
+                'store_brand_logo' => $effectiveNavbarLogo,
+                'store_favicon' => $get('store_favicon', ''),
+                'logo_placements' => $logoPlacements,
                 'hero_headline_line1' => $get('hero_headline_line1', 'Uncompromising'),
                 'hero_headline_line2_gradient' => $get('hero_headline_line2_gradient', 'Industrial Audio'),
                 'hero_headline_line3' => $get('hero_headline_line3', '& Tech Ecosystem.'),
@@ -93,7 +110,7 @@ class ThemeController extends Controller
                 'hero_badge_text' => $get('hero_badge_text', '2026 Studio Flagship Release'),
                 'split_reveal_enabled' => $get('split_reveal_enabled', true),
                 'split_reveal_image' => $get('split_reveal_image', 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=2000&q=85'),
-                'split_reveal_logo' => $get('split_reveal_logo', ''),
+                'split_reveal_logo' => $effectiveSplitLogo,
                 'split_reveal_title' => ($get('split_reveal_title') && $get('split_reveal_title') !== 'AETHER') ? $get('split_reveal_title') : $brandName,
                 'split_reveal_subtitle' => $get('split_reveal_subtitle', 'PRECISION ACOUSTICS & HARDWARE'),
                 'split_reveal_duration' => (float) $get('split_reveal_duration', 2.2),

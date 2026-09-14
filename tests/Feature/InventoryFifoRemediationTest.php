@@ -162,7 +162,7 @@ class InventoryFifoRemediationTest extends TestCase
         ]);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessageMatches('/has no valid FIFO cost layer or documented cost price/');
+        $this->expectExceptionMessage('with no valid FIFO cost layer or documented cost price');
 
         InventoryCostingService::fulfillOrderAndComputeCogs($order);
     }

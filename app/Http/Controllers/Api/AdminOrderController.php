@@ -115,6 +115,7 @@ class AdminOrderController extends Controller
             'items.*.variant_id' => 'nullable|exists:product_variants,id',
             'items.*.quantity' => 'required|integer|min:1',
             'items.*.unit_price' => 'nullable|numeric|min:0',
+            'items.*.price_override_reason' => 'nullable|string|max:500',
             'payment_status' => 'required|in:pending,paid,failed,refunded',
             'payment_method' => 'required|string',
             'order_status' => 'required|in:pending,processing,shipped,delivered,cancelled,refunded',
@@ -128,24 +129,75 @@ class AdminOrderController extends Controller
 
         $subtotal = 0;
         $orderItemsData = [];
+        $overriddenItems = [];
 
         foreach ($validated['items'] as $item) {
-            $product = Product::with('primaryImage')->findOrFail($item['product_id']);
-            $unitPrice = isset($item['unit_price']) ? (float) $item['unit_price'] : (float) $product->price;
+            $product = Product::with(['primaryImage', 'images'])->findOrFail($item['product_id']);
+            $cataloguePrice = (float) $product->price;
+            $variant = null;
+            if (!empty($item['variant_id'])) {
+                $variant = ProductVariant::where('id', $item['variant_id'])->where('product_id', $product->id)->firstOrFail();
+                $cataloguePrice += (float) $variant->price_modifier;
+            }
+
+            $submittedPrice = isset($item['unit_price']) ? round((float) $item['unit_price'], 2) : null;
+            $unitPrice = $cataloguePrice;
+            $isOverridden = false;
+            $overrideReason = null;
+
+            if ($submittedPrice !== null && abs($submittedPrice - $cataloguePrice) > 0.001) {
+                // Check permission: user must have 'orders.price_override' or be Super Admin / Admin
+                $user = $request->user();
+                if (!$user->isSuperAdmin() && !$user->isAdmin() && !$user->hasPermission('orders.price_override')) {
+                    abort(403, 'Unauthorized price override. Missing required permission: orders.price_override');
+                }
+
+                // Zero-price protection
+                if ($submittedPrice <= 0) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'items' => ["Zero-dollar or negative price overrides are strictly prohibited without administrative authorization."],
+                    ]);
+                }
+
+                // Mandatory reason (minimum 5 characters)
+                $reason = trim($item['price_override_reason'] ?? ($request->input('price_override_reason') ?? ''));
+                if (strlen($reason) < 5) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'items' => ["A valid price override reason (minimum 5 characters) is required when modifying catalogue prices."],
+                    ]);
+                }
+
+                $isOverridden = true;
+                $overrideReason = $reason;
+                $unitPrice = $submittedPrice;
+                $overriddenItems[] = [
+                    'product_name' => $product->name,
+                    'catalogue_price' => $cataloguePrice,
+                    'override_price' => $unitPrice,
+                    'reason' => $overrideReason,
+                ];
+            }
+
             $quantity = (int) $item['quantity'];
-            $totalPrice = $unitPrice * $quantity;
+            $totalPrice = round($unitPrice * $quantity, 2);
             $subtotal += $totalPrice;
 
             // Reduce stock
             $product->decrement('stock_quantity', $quantity);
+            if ($variant) {
+                $variant->decrement('stock_quantity', $quantity);
+            }
 
             $orderItemsData[] = [
                 'product_id' => $product->id,
-                'variant_id' => $item['variant_id'] ?? null,
+                'variant_id' => $variant?->id,
                 'product_name' => $product->name,
-                'product_sku' => $product->sku,
+                'product_sku' => $variant ? $variant->sku : $product->sku,
                 'product_image' => $product->primaryImage?->image_url ?? $product->images?->first()?->image_url,
                 'unit_price' => $unitPrice,
+                'original_unit_price' => $cataloguePrice,
+                'is_price_overridden' => $isOverridden,
+                'override_reason' => $overrideReason,
                 'quantity' => $quantity,
                 'total_price' => $totalPrice,
             ];
@@ -183,6 +235,34 @@ class AdminOrderController extends Controller
 
         foreach ($orderItemsData as $itemData) {
             $order->items()->create($itemData);
+        }
+
+        // If order was marked as paid on creation, record initial payment in ledger
+        if ($order->payment_status === 'paid' && $order->total_amount > 0) {
+            $order->payments()->create([
+                'payment_number' => \App\Models\OrderPayment::generatePaymentNumber(),
+                'payment_method' => $order->payment_method ?: 'cash',
+                'provider' => 'manual',
+                'amount' => $order->total_amount,
+                'currency' => 'BDT',
+                'status' => 'completed',
+                'type' => 'full_payment',
+                'collected_at' => now(),
+                'notes' => 'Initial payment upon admin order creation',
+                'created_by_user_id' => $request->user()?->id,
+            ]);
+        }
+
+        if (!empty($overriddenItems)) {
+            AuditLog::log(
+                $request->user(),
+                'order.price_override',
+                'Order',
+                $order->id,
+                "Admin {$request->user()->name} applied price override(s) on Order #{$order->order_number}.",
+                null,
+                ['overrides' => $overriddenItems]
+            );
         }
 
         AuditLog::log(
@@ -374,48 +454,28 @@ class AdminOrderController extends Controller
 
         $order = Order::with('items')->findOrFail($id);
 
-        if ($order->payment_status === 'refunded') {
-            return response()->json(['message' => 'Order is already marked as refunded.'], 422);
-        }
-
         $validated = $request->validate([
             'reason' => 'required|string|max:255',
             'restock' => 'boolean',
+            'amount' => 'nullable|numeric|min:0.01',
+            'refund_method' => 'nullable|string|in:cash,bank_transfer,bkash,nagad,store_credit',
         ]);
 
-        $order->update([
-            'payment_status' => 'refunded',
-            'order_status' => 'refunded',
-            'notes' => ($order->notes ? $order->notes . "\n" : "") . "Refunded: " . $validated['reason'],
-        ]);
-
-        if (!empty($validated['restock'])) {
-            $this->restoreOrderInventory($order, 'refund');
+        try {
+            $updatedOrder = app(\App\Services\OrderReturnService::class)->refundDirectOrder(
+                $order,
+                $validated,
+                $request->user()
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
         }
 
-        // Restore store credit if order utilized store credit
-        StoreCreditService::refundOrderCredit($order, $validated['reason']);
-
-        OrderTimelineService::recordEvent(
-            order: $order,
-            eventType: 'refunded',
-            title: 'Order Refunded',
-            description: "Order marked as refunded. Reason: {$validated['reason']}" . (!empty($validated['restock']) ? " (Inventory restocked)" : ""),
-            actorName: $request->user()->name,
-            iconType: 'dollar'
-        );
-
-        AuditLog::log(
-            $request->user(),
-            'order.refunded',
-            'Order',
-            $order->id,
-            "Order {$order->order_number} was marked as refunded. Reason: {$validated['reason']}"
-        );
-
         return response()->json([
-            'message' => "Order {$order->order_number} successfully marked as refunded.",
-            'order' => $order->fresh(['items']),
+            'message' => "Order {$order->order_number} successfully refunded.",
+            'order' => $updatedOrder,
         ]);
     }
 
@@ -468,84 +528,7 @@ class AdminOrderController extends Controller
      */
     protected function restoreOrderInventory(Order $order, string $reason = 'cancellation'): void
     {
-        // Idempotency: check if an OrderRestock movement for this order already exists
-        $alreadyRestored = \App\Models\InventoryMovement::where('reference_type', 'OrderRestock')
-            ->where('reference_id', (string)$order->id)
-            ->exists();
-
-        if ($alreadyRestored) {
-            return;
-        }
-
-        foreach ($order->items as $item) {
-            if (!$item->product_id) continue;
-
-            $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
-            $variant = !empty($item->variant_id)
-                ? ProductVariant::where('id', $item->variant_id)->lockForUpdate()->first()
-                : null;
-
-            if ($product) {
-                // 1. Increment physical stock
-                $product->increment('stock_quantity', $item->quantity);
-                if ($variant) {
-                    $variant->increment('stock_quantity', $item->quantity);
-                }
-
-                // 2. Restore FIFO cost layers from order_item_cost_layers
-                $costLayersConsumed = $item->costLayers;
-                if ($costLayersConsumed && $costLayersConsumed->isNotEmpty()) {
-                    foreach ($costLayersConsumed as $consumed) {
-                        $costLayer = \App\Models\InventoryCostLayer::find($consumed->inventory_cost_layer_id);
-                        if ($costLayer) {
-                            $costLayer->increment('remaining_quantity', $consumed->quantity_consumed);
-                            if ($costLayer->remaining_quantity > 0 && $costLayer->is_depleted) {
-                                $costLayer->update(['is_depleted' => false]);
-                            }
-                        } else {
-                            \App\Models\InventoryCostLayer::create([
-                                'product_id' => $product->id,
-                                'variant_id' => $variant?->id,
-                                'unit_cost' => $consumed->unit_cost,
-                                'initial_quantity' => $consumed->quantity_consumed,
-                                'remaining_quantity' => $consumed->quantity_consumed,
-                                'is_depleted' => false,
-                            ]);
-                        }
-                    }
-                } else {
-                    $unitCost = ($item->cogs_unit_cost !== null && (float)$item->cogs_unit_cost > 0)
-                        ? (float)$item->cogs_unit_cost
-                        : (($variant && $variant->cost_price !== null && (float)$variant->cost_price > 0)
-                            ? (float)$variant->cost_price
-                            : ($product->cost_price !== null && (float)$product->cost_price > 0 ? (float)$product->cost_price : 0.00));
-
-                    \App\Models\InventoryCostLayer::create([
-                        'product_id' => $product->id,
-                        'variant_id' => $variant?->id,
-                        'unit_cost' => $unitCost,
-                        'initial_quantity' => $item->quantity,
-                        'remaining_quantity' => $item->quantity,
-                        'is_depleted' => false,
-                    ]);
-                }
-
-                // 3. Record Auditable Inventory Movement with valid schema columns
-                \App\Models\InventoryMovement::create([
-                    'product_id' => $item->product_id,
-                    'variant_id' => $item->variant_id,
-                    'movement_type' => 'refund_restock',
-                    'quantity' => $item->quantity,
-                    'unit_cost' => (float)($item->cogs_unit_cost ?? 0.00),
-                    'total_cost' => round($item->quantity * (float)($item->cogs_unit_cost ?? 0.00), 2),
-                    'balance_after' => $product->fresh()->stock_quantity,
-                    'reference_type' => 'OrderRestock',
-                    'reference_id' => (string) $order->id,
-                    'notes' => "Restocked {$item->quantity} unit(s) due to order {$reason} (#{$order->order_number})",
-                    'user_id' => auth()->id(),
-                ]);
-            }
-        }
+        app(\App\Services\OrderReturnService::class)->restoreOrderInventory($order, $reason, auth()->user());
     }
 
     /**

@@ -377,6 +377,7 @@ class AdminProductController extends Controller
                         'barcode' => !empty($v['barcode']) ? trim($v['barcode']) : null,
                         'sku' => $product->sku . '-' . strtoupper(Str::random(4)),
                     ]);
+                }
                 $product->syncStockFromVariants();
             }
             $wasDirty = true;
