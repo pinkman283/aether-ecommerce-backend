@@ -30,6 +30,8 @@ use App\Http\Controllers\Api\AdminPromotionController;
 use App\Http\Controllers\Api\AdminHomepageSectionController;
 use App\Http\Controllers\Api\AdminPurchaseOrderController;
 use App\Http\Controllers\Api\AdminReportController;
+use App\Http\Controllers\Api\AdminReturnController;
+use App\Http\Controllers\Api\AdminCourierSettlementController;
 use App\Http\Controllers\Api\AdminReviewController;
 use App\Http\Controllers\Api\AdminSalesController;
 use App\Http\Controllers\Api\AdminSettingsController;
@@ -58,7 +60,52 @@ use Illuminate\Support\Facades\Route;
 */
 
 // ==========================================
-// 1. PUBLIC STOREFRONT ENDPOINTS
+// 1. SYSTEM HEALTH & MONITORING
+// ==========================================
+Route::get('/health', function () {
+    $status = 'ok';
+    $checks = [];
+
+    // 1. Database Check
+    try {
+        \Illuminate\Support\Facades\DB::connection()->getPdo();
+        $checks['database'] = ['status' => 'healthy', 'message' => 'Connected'];
+    } catch (\Throwable $e) {
+        $status = 'degraded';
+        $checks['database'] = ['status' => 'unhealthy', 'message' => $e->getMessage()];
+    }
+
+    // 2. Cache Check
+    try {
+        \Illuminate\Support\Facades\Cache::put('health_check', true, 10);
+        $checks['cache'] = ['status' => 'healthy', 'message' => 'Read/write functional'];
+    } catch (\Throwable $e) {
+        $status = 'degraded';
+        $checks['cache'] = ['status' => 'unhealthy', 'message' => $e->getMessage()];
+    }
+
+    // 3. Storage Writable Check
+    $storageWritable = is_writable(storage_path('framework/views'));
+    $checks['storage'] = [
+        'status' => $storageWritable ? 'healthy' : 'unhealthy',
+        'message' => $storageWritable ? 'Storage directories writable' : 'Storage directory not writable',
+    ];
+    if (!$storageWritable) {
+        $status = 'degraded';
+    }
+
+    $statusCode = $status === 'ok' ? 200 : 503;
+
+    return response()->json([
+        'status' => $status,
+        'timestamp' => now()->toIso8601String(),
+        'environment' => config('app.env'),
+        'checks' => $checks,
+    ], $statusCode);
+});
+
+// ==========================================
+// 2. PUBLIC STOREFRONT ENDPOINTS
 // ==========================================
 Route::get('/featured', [ProductController::class, 'featured']);
 Route::get('/products', [ProductController::class, 'index']);
@@ -235,11 +282,23 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::post('/orders/{id}/refund', [AdminOrderController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Courier Logistics & Consignment Management
+    Route::get('/orders/{id}/timeline', [AdminOrderController::class, 'getTimeline']);
+    Route::get('/orders/courier/pathao/cities', [AdminOrderController::class, 'getPathaoCities']);
+    Route::get('/orders/courier/pathao/zones/{cityId}', [AdminOrderController::class, 'getPathaoZones']);
+    Route::get('/orders/courier/pathao/areas/{zoneId}', [AdminOrderController::class, 'getPathaoAreas']);
     Route::get('/orders/{id}/courier-options', [AdminOrderController::class, 'getCourierOptions']);
     Route::post('/orders/{id}/shipments', [AdminOrderController::class, 'bookShipment']);
     Route::get('/orders/{id}/shipments/{shipmentId}/track', [AdminOrderController::class, 'trackShipment']);
     Route::post('/orders/{id}/shipments/{shipmentId}/cancel', [AdminOrderController::class, 'cancelShipment']);
     Route::get('/orders/{id}/shipments/{shipmentId}/label', [AdminOrderController::class, 'printShippingLabel']);
+
+    // Returns & RTO Management
+    Route::get('/returns', [AdminReturnController::class, 'index']);
+    Route::get('/returns/{id}', [AdminReturnController::class, 'show']);
+    Route::post('/returns', [AdminReturnController::class, 'store']);
+    Route::post('/returns/{id}/receive', [AdminReturnController::class, 'receive']);
+    Route::post('/returns/{id}/qc', [AdminReturnController::class, 'qc']);
+    Route::post('/returns/{id}/refund', [AdminReturnController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Commercial Sales History & Invoices
     Route::get('/sales', [AdminSalesController::class, 'index']);
@@ -383,6 +442,13 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
         Route::post('/banking/transfer', [AdminAccountingController::class, 'transfer']);
         Route::get('/reports', [AdminAccountingController::class, 'reports']);
         Route::get('/export', [AdminAccountingController::class, 'export']);
+
+        // Courier Settlement Statements & Variance Reconciliation
+        Route::get('/settlements', [AdminCourierSettlementController::class, 'index']);
+        Route::post('/settlements/import-csv', [AdminCourierSettlementController::class, 'importCsv']);
+        Route::get('/settlements/{id}', [AdminCourierSettlementController::class, 'show']);
+        Route::post('/settlements', [AdminCourierSettlementController::class, 'store']);
+        Route::post('/settlements/{id}/reconcile', [AdminCourierSettlementController::class, 'reconcile']);
     });
 
     // Review Moderation & Management

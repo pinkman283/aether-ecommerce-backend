@@ -4,11 +4,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Models\InventoryMovement;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\ProductVariant;
 use App\Models\Setting;
+use App\Models\Shipment;
 use App\Models\User;
+use App\Services\AccountingService;
+use App\Services\OrderTimelineService;
 use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,7 +25,16 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
 
-        $query = Order::with(['items.product', 'items.variant', 'user', 'cashierUser', 'posRegisterSession.posRegister', 'latestShipment', 'shipments'])->latest();
+        $query = Order::with([
+            'items.product',
+            'items.variant',
+            'user',
+            'cashierUser',
+            'posRegisterSession.posRegister',
+            'latestShipment',
+            'shipments',
+            'latestReturn',
+        ])->latest();
 
         if ($request->filled('source') && $request->input('source') !== 'all') {
             $query->where('order_source', $request->input('source'));
@@ -263,13 +277,36 @@ class AdminOrderController extends Controller
             $order->delivered_at = now();
         }
 
-        // If transitioning to cancelled from non-delivered, restore stock
+        // If transitioning to cancelled from non-delivered, restore variant stock & reverse accounting
         if ($newStatus === 'cancelled' && $oldStatus !== 'cancelled') {
-            foreach ($order->items as $item) {
-                if ($item->product_id) {
-                    Product::where('id', $item->product_id)->increment('stock_quantity', $item->quantity);
-                }
-            }
+            $this->restoreOrderInventory($order, 'cancellation');
+            AccountingService::postOrderCancellation($order);
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'cancelled',
+                title: 'Order Cancelled',
+                description: "Order marked as cancelled by {$request->user()->name}. Inventory and accounting reversed.",
+                actorName: $request->user()->name,
+                iconType: 'x'
+            );
+        } elseif ($newStatus === 'confirmed' && $oldStatus !== 'confirmed') {
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'confirmed',
+                title: 'Order Confirmed',
+                description: "Order confirmed by {$request->user()->name}. Prepared for fulfillment.",
+                actorName: $request->user()->name,
+                iconType: 'check'
+            );
+        } elseif ($newStatus === 'delivered' && $oldStatus !== 'delivered') {
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'delivered',
+                title: 'Order Delivered',
+                description: "Order marked delivered by {$request->user()->name}.",
+                actorName: $request->user()->name,
+                iconType: 'check'
+            );
         }
 
         $order->update($validated);
@@ -298,30 +335,36 @@ class AdminOrderController extends Controller
         $orderNumber = $order->order_number;
         $oldValues = $order->toArray();
 
-        // If order was not delivered/cancelled, restore stock
-        if (!in_array($order->order_status, ['cancelled', 'refunded'])) {
-            foreach ($order->items as $item) {
-                if ($item->product_id) {
-                    Product::where('id', $item->product_id)->increment('stock_quantity', $item->quantity);
-                }
-            }
+        // If order was not already delivered/cancelled, restore stock and reverse accounting
+        if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
+            $this->restoreOrderInventory($order, 'archival');
+            AccountingService::postOrderCancellation($order);
         }
 
+        OrderTimelineService::recordEvent(
+            order: $order,
+            eventType: 'cancelled',
+            title: 'Order Archived / Soft-Deleted',
+            description: "Order was safely archived by {$request->user()->name}. Financial history preserved.",
+            actorName: $request->user()->name,
+            iconType: 'x'
+        );
+
         $order->items()->delete();
-        $order->delete();
+        $order->delete(); // Soft delete preserves foreign keys and journal entries
 
         AuditLog::log(
             $request->user(),
             'order.deleted',
             'Order',
             $id,
-            "Deleted order #{$orderNumber}.",
+            "Archived (soft-deleted) order #{$orderNumber}.",
             $oldValues,
             null
         );
 
         return response()->json([
-            'message' => "Order #{$orderNumber} deleted successfully.",
+            'message' => "Order #{$orderNumber} archived successfully.",
         ]);
     }
 
@@ -329,7 +372,7 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.manage');
 
-        $order = Order::findOrFail($id);
+        $order = Order::with('items')->findOrFail($id);
 
         if ($order->payment_status === 'refunded') {
             return response()->json(['message' => 'Order is already marked as refunded.'], 422);
@@ -347,15 +390,20 @@ class AdminOrderController extends Controller
         ]);
 
         if (!empty($validated['restock'])) {
-            foreach ($order->items as $item) {
-                if ($item->product_id) {
-                    Product::where('id', $item->product_id)->increment('stock_quantity', $item->quantity);
-                }
-            }
+            $this->restoreOrderInventory($order, 'refund');
         }
 
         // Restore store credit if order utilized store credit
         StoreCreditService::refundOrderCredit($order, $validated['reason']);
+
+        OrderTimelineService::recordEvent(
+            order: $order,
+            eventType: 'refunded',
+            title: 'Order Refunded',
+            description: "Order marked as refunded. Reason: {$validated['reason']}" . (!empty($validated['restock']) ? " (Inventory restocked)" : ""),
+            actorName: $request->user()->name,
+            iconType: 'dollar'
+        );
 
         AuditLog::log(
             $request->user(),
@@ -383,12 +431,18 @@ class AdminOrderController extends Controller
         $count = 0;
 
         foreach ($validated['ids'] as $id) {
-            $order = Order::find($id);
+            $order = Order::with('items')->find($id);
             if ($order) {
                 $orderNumber = $order->order_number;
                 $oldValues = $order->toArray();
+
+                if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
+                    $this->restoreOrderInventory($order, 'bulk_archival');
+                    AccountingService::postOrderCancellation($order);
+                }
+
                 $order->items()->delete();
-                $order->delete();
+                $order->delete(); // Soft delete
                 $count++;
 
                 AuditLog::log(
@@ -396,7 +450,7 @@ class AdminOrderController extends Controller
                     'order.deleted',
                     'Order',
                     $id,
-                    "Bulk deleted order #{$orderNumber}.",
+                    "Bulk archived order #{$orderNumber}.",
                     $oldValues,
                     null
                 );
@@ -404,9 +458,94 @@ class AdminOrderController extends Controller
         }
 
         return response()->json([
-            'message' => "Successfully deleted {$count} order(s).",
+            'message' => "Successfully archived {$count} order(s).",
             'deleted_count' => $count,
         ]);
+    }
+
+    /**
+     * Helper to safely and idempotently restore variant and product inventory with audit movements and FIFO layer recovery.
+     */
+    protected function restoreOrderInventory(Order $order, string $reason = 'cancellation'): void
+    {
+        // Idempotency: check if an OrderRestock movement for this order already exists
+        $alreadyRestored = \App\Models\InventoryMovement::where('reference_type', 'OrderRestock')
+            ->where('reference_id', (string)$order->id)
+            ->exists();
+
+        if ($alreadyRestored) {
+            return;
+        }
+
+        foreach ($order->items as $item) {
+            if (!$item->product_id) continue;
+
+            $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+            $variant = !empty($item->variant_id)
+                ? ProductVariant::where('id', $item->variant_id)->lockForUpdate()->first()
+                : null;
+
+            if ($product) {
+                // 1. Increment physical stock
+                $product->increment('stock_quantity', $item->quantity);
+                if ($variant) {
+                    $variant->increment('stock_quantity', $item->quantity);
+                }
+
+                // 2. Restore FIFO cost layers from order_item_cost_layers
+                $costLayersConsumed = $item->costLayers;
+                if ($costLayersConsumed && $costLayersConsumed->isNotEmpty()) {
+                    foreach ($costLayersConsumed as $consumed) {
+                        $costLayer = \App\Models\InventoryCostLayer::find($consumed->inventory_cost_layer_id);
+                        if ($costLayer) {
+                            $costLayer->increment('remaining_quantity', $consumed->quantity_consumed);
+                            if ($costLayer->remaining_quantity > 0 && $costLayer->is_depleted) {
+                                $costLayer->update(['is_depleted' => false]);
+                            }
+                        } else {
+                            \App\Models\InventoryCostLayer::create([
+                                'product_id' => $product->id,
+                                'variant_id' => $variant?->id,
+                                'unit_cost' => $consumed->unit_cost,
+                                'initial_quantity' => $consumed->quantity_consumed,
+                                'remaining_quantity' => $consumed->quantity_consumed,
+                                'is_depleted' => false,
+                            ]);
+                        }
+                    }
+                } else {
+                    $unitCost = ($item->cogs_unit_cost !== null && (float)$item->cogs_unit_cost > 0)
+                        ? (float)$item->cogs_unit_cost
+                        : (($variant && $variant->cost_price !== null && (float)$variant->cost_price > 0)
+                            ? (float)$variant->cost_price
+                            : ($product->cost_price !== null && (float)$product->cost_price > 0 ? (float)$product->cost_price : 0.00));
+
+                    \App\Models\InventoryCostLayer::create([
+                        'product_id' => $product->id,
+                        'variant_id' => $variant?->id,
+                        'unit_cost' => $unitCost,
+                        'initial_quantity' => $item->quantity,
+                        'remaining_quantity' => $item->quantity,
+                        'is_depleted' => false,
+                    ]);
+                }
+
+                // 3. Record Auditable Inventory Movement with valid schema columns
+                \App\Models\InventoryMovement::create([
+                    'product_id' => $item->product_id,
+                    'variant_id' => $item->variant_id,
+                    'movement_type' => 'refund_restock',
+                    'quantity' => $item->quantity,
+                    'unit_cost' => (float)($item->cogs_unit_cost ?? 0.00),
+                    'total_cost' => round($item->quantity * (float)($item->cogs_unit_cost ?? 0.00), 2),
+                    'balance_after' => $product->fresh()->stock_quantity,
+                    'reference_type' => 'OrderRestock',
+                    'reference_id' => (string) $order->id,
+                    'notes' => "Restocked {$item->quantity} unit(s) due to order {$reason} (#{$order->order_number})",
+                    'user_id' => auth()->id(),
+                ]);
+            }
+        }
     }
 
     /**
@@ -464,6 +603,9 @@ class AdminOrderController extends Controller
             'recipient_name' => 'nullable|string|max:255',
             'recipient_phone' => 'nullable|string|max:30',
             'recipient_address' => 'nullable|string',
+            'recipient_city_id' => 'nullable|integer',
+            'recipient_zone_id' => 'nullable|integer',
+            'recipient_area_id' => 'nullable|integer',
         ]);
 
         try {
@@ -575,6 +717,74 @@ class AdminOrderController extends Controller
                 }),
             ],
         ]);
+    }
+
+    /**
+     * Get order lifecycle timeline events
+     */
+    public function getTimeline(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
+        $order = Order::findOrFail($id);
+        $timeline = OrderTimelineService::getTimeline($order);
+
+        return response()->json([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'timeline' => $timeline,
+        ]);
+    }
+
+    /**
+     * Get Pathao courier cities for booking dropdown
+     */
+    public function getPathaoCities(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        try {
+            $courierManager = app(\App\Services\Courier\CourierManager::class);
+            $cities = $courierManager->driver('pathao')->getCities();
+
+            return response()->json(['cities' => $cities]);
+        } catch (\Throwable $e) {
+            return response()->json(['cities' => [], 'error' => $e->getMessage()], 200);
+        }
+    }
+
+    /**
+     * Get Pathao courier zones for a city
+     */
+    public function getPathaoZones(Request $request, int $cityId): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        try {
+            $courierManager = app(\App\Services\Courier\CourierManager::class);
+            $zones = $courierManager->driver('pathao')->getZones($cityId);
+
+            return response()->json(['zones' => $zones]);
+        } catch (\Throwable $e) {
+            return response()->json(['zones' => [], 'error' => $e->getMessage()], 200);
+        }
+    }
+
+    /**
+     * Get Pathao courier areas for a zone
+     */
+    public function getPathaoAreas(Request $request, int $zoneId): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        try {
+            $courierManager = app(\App\Services\Courier\CourierManager::class);
+            $areas = $courierManager->driver('pathao')->getAreas($zoneId);
+
+            return response()->json(['areas' => $areas]);
+        } catch (\Throwable $e) {
+            return response()->json(['areas' => [], 'error' => $e->getMessage()], 200);
+        }
     }
 }
 

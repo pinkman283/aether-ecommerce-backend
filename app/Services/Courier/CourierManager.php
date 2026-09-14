@@ -135,14 +135,45 @@ class CourierManager
             ]);
 
             // 5. Update Order carrier & tracking for seamless backward compatibility
-            $order->update([
+            $orderUpdates = [
                 'carrier' => ucfirst($provider),
                 'tracking_code' => $shipment->tracking_code,
                 'order_status' => 'shipped',
                 'shipped_at' => $order->shipped_at ?: now(),
-            ]);
+            ];
+            if (!empty($params['recipient_city_id'])) {
+                $orderUpdates['shipping_city_id'] = (int) $params['recipient_city_id'];
+            }
+            if (!empty($params['recipient_zone_id'])) {
+                $orderUpdates['shipping_zone_id'] = (int) $params['recipient_zone_id'];
+            }
+            if (!empty($params['recipient_area_id'])) {
+                $orderUpdates['shipping_area_id'] = (int) $params['recipient_area_id'];
+            }
+            $order->update($orderUpdates);
 
-            // 6. Record Audit Log
+            // 6. Record in Order Lifecycle Timeline
+            try {
+                \App\Services\OrderTimelineService::recordEvent(
+                    order: $order,
+                    eventType: 'courier_booked',
+                    title: 'Courier Booked',
+                    description: "Booked with " . ucfirst($shipment->provider) . " (Consignment: {$shipment->consignment_id}, Tracking: {$shipment->tracking_code})",
+                    actorType: auth()->check() ? 'admin' : 'system',
+                    actorId: auth()->id(),
+                    actorName: auth()->user()?->name ?? 'System Admin',
+                    metadata: [
+                        'provider' => $shipment->provider,
+                        'consignment_id' => $shipment->consignment_id,
+                        'tracking_code' => $shipment->tracking_code,
+                        'cod_amount' => $shipment->cod_amount,
+                    ]
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Failed to record courier_booked timeline event: ' . $e->getMessage());
+            }
+
+            // 7. Record Audit Log
             AuditLog::log(
                 auth()->user(),
                 'courier.booked',
@@ -153,11 +184,18 @@ class CourierManager
                 $shipment->toArray()
             );
 
-            // 7. Post accounting entry if courier expense is known
+            // 8. Post accounting entry if courier expense is known
             try {
                 AccountingService::postCourierBooking($shipment);
             } catch (\Throwable $e) {
                 Log::warning('Courier booking accounting entry skipped: ' . $e->getMessage());
+            }
+
+            // 9. Dispatch customer notification
+            try {
+                \App\Services\CustomerNotificationService::sendShipmentDispatched($order, $shipment);
+            } catch (\Throwable $e) {
+                Log::warning('Dispatch customer notification skipped: ' . $e->getMessage());
             }
 
             return $shipment;

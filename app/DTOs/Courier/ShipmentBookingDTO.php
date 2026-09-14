@@ -15,6 +15,9 @@ class ShipmentBookingDTO
         public readonly ?string $deliveryArea = null,
         public readonly ?string $pickupStoreId = null,
         public readonly ?string $notes = null,
+        public readonly ?int $recipientCityId = null,
+        public readonly ?int $recipientZoneId = null,
+        public readonly ?int $recipientAreaId = null,
         public readonly array $items = [],
         public readonly array $metadata = []
     ) {}
@@ -59,6 +62,9 @@ class ShipmentBookingDTO
             deliveryArea: $overrides['delivery_area'] ?? ($address['city'] ?? null),
             pickupStoreId: $overrides['pickup_store_id'] ?? null,
             notes: $overrides['notes'] ?? $order->notes,
+            recipientCityId: isset($overrides['recipient_city_id']) ? (int) $overrides['recipient_city_id'] : ($order->shipping_city_id ?: null),
+            recipientZoneId: isset($overrides['recipient_zone_id']) ? (int) $overrides['recipient_zone_id'] : ($order->shipping_zone_id ?: null),
+            recipientAreaId: isset($overrides['recipient_area_id']) ? (int) $overrides['recipient_area_id'] : ($order->shipping_area_id ?: null),
             items: $order->items ? $order->items->toArray() : [],
             metadata: $overrides['metadata'] ?? []
         );

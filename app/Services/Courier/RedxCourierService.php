@@ -163,7 +163,19 @@ class RedxCourierService implements CourierProviderInterface
 
     public function verifyWebhookSignature(Request $request): bool
     {
-        return true;
+        $token = $request->header('API-ACCESS-TOKEN')
+            ?? $request->header('X-RedX-Token')
+            ?? $request->header('X-RedX-Signature')
+            ?? $request->header('Authorization');
+
+        $cleanToken = str_replace('Bearer ', '', $token ?? '');
+        $expected = $this->apiToken;
+
+        if (empty($expected) || empty($cleanToken)) {
+            return false;
+        }
+
+        return hash_equals($expected, $cleanToken);
     }
 
     public function parseWebhook(Request $request): ?WebhookEventDTO

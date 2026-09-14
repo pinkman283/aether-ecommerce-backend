@@ -17,6 +17,8 @@ class ProductVariant extends Model
         'color_name',
         'color_hex',
         'sku',
+        'barcode',
+        'cost_price',
         'price_modifier',
         'stock_quantity',
     ];
@@ -24,6 +26,7 @@ class ProductVariant extends Model
     protected function casts(): array
     {
         return [
+            'cost_price' => 'float',
             'price_modifier' => 'float',
             'stock_quantity' => 'integer',
         ];

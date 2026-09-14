@@ -24,6 +24,11 @@ class Shipment extends Model
         'recipient_address',
         'cod_amount',
         'courier_charge',
+        'rto_charge',
+        'collected_amount',
+        'remitted_amount',
+        'settlement_status',
+        'courier_settlement_id',
         'courier_cod_fee',
         'weight',
         'delivery_area',
@@ -49,6 +54,9 @@ class Shipment extends Model
         return [
             'cod_amount' => 'float',
             'courier_charge' => 'float',
+            'rto_charge' => 'float',
+            'collected_amount' => 'float',
+            'remitted_amount' => 'float',
             'courier_cod_fee' => 'float',
             'weight' => 'float',
             'delivery_attempts' => 'integer',
@@ -73,6 +81,16 @@ class Shipment extends Model
     public function webhookLogs(): HasMany
     {
         return $this->hasMany(CourierWebhookLog::class, 'consignment_id', 'consignment_id');
+    }
+
+    public function returns(): HasMany
+    {
+        return $this->hasMany(OrderReturn::class)->latest();
+    }
+
+    public function settlement(): BelongsTo
+    {
+        return $this->belongsTo(CourierSettlement::class, 'courier_settlement_id');
     }
 
     public function isDelivered(): bool

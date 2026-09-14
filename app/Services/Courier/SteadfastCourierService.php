@@ -189,11 +189,11 @@ class SteadfastCourierService implements CourierProviderInterface
             ?? $request->header('Secret-Key')
             ?? $request->query('token');
 
-        if (!empty($this->secretKey)) {
-            return !empty($token) && hash_equals($this->secretKey, $token);
+        if (empty($this->secretKey) || empty($token)) {
+            return false; // Strictly reject if secret key or token is missing
         }
 
-        return true;
+        return hash_equals($this->secretKey, $token);
     }
 
     public function parseWebhook(Request $request): ?WebhookEventDTO

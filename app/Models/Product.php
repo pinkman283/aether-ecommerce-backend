@@ -22,6 +22,7 @@ class Product extends Model
         'short_description',
         'description',
         'price',
+        'cost_price',
         'compare_at_price',
         'stock_quantity',
         'is_featured',
@@ -38,6 +39,7 @@ class Product extends Model
     {
         return [
             'price' => 'float',
+            'cost_price' => 'float',
             'compare_at_price' => 'float',
             'stock_quantity' => 'integer',
             'is_featured' => 'boolean',
@@ -64,6 +66,11 @@ class Product extends Model
     public function primaryImage(): HasOne
     {
         return $this->hasOne(ProductImage::class)->where('is_primary', true);
+    }
+
+    public function getImageAttribute(): ?string
+    {
+        return $this->primaryImage?->image_url ?? $this->images->first()?->image_url;
     }
 
     public function variants(): HasMany
@@ -119,5 +126,13 @@ class Product extends Model
     public function scopeBestSellers(Builder $query): Builder
     {
         return $query->where('is_best_seller', true);
+    }
+
+    public function syncStockFromVariants(): void
+    {
+        if ($this->variants()->exists()) {
+            $totalStock = (int) $this->variants()->sum('stock_quantity');
+            $this->updateQuietly(['stock_quantity' => $totalStock]);
+        }
     }
 }

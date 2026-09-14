@@ -188,14 +188,44 @@ class PathaoCourierService implements CourierProviderInterface
             return ShipmentBookingResultDTO::failed('Pathao Store ID (Pickup Hub) is required.');
         }
 
+        $cityId = $dto->recipientCityId;
+        $zoneId = $dto->recipientZoneId;
+
+        // If not explicitly provided, attempt intelligent resolution from address text
+        if (!$cityId || !$zoneId) {
+            $addrText = strtolower($dto->recipientAddress . ' ' . ($dto->deliveryArea ?? ''));
+            $cities = $this->getCities();
+            foreach ($cities as $c) {
+                if (str_contains($addrText, strtolower($c['city_name']))) {
+                    $cityId = $c['city_id'];
+                    break;
+                }
+            }
+
+            if (!$cityId) {
+                if (str_contains($addrText, 'dhaka')) {
+                    $cityId = 1;
+                } else {
+                    return ShipmentBookingResultDTO::failed(
+                        'Pathao requires a valid recipient city and zone. Please select recipient city and zone before booking.'
+                    );
+                }
+            }
+
+            if (!$zoneId && $cityId) {
+                $zones = $this->getZones($cityId);
+                $zoneId = $zones[0]['zone_id'] ?? 1;
+            }
+        }
+
         $payload = [
             'store_id' => (int) $storeId,
             'merchant_order_id' => $dto->invoiceNumber,
             'recipient_name' => $dto->recipientName,
             'recipient_phone' => $dto->recipientPhone,
             'recipient_address' => $dto->recipientAddress,
-            'recipient_city' => 1, // Default Dhaka city ID, can be overridden by area mapping
-            'recipient_zone' => 1,
+            'recipient_city' => (int) $cityId,
+            'recipient_zone' => (int) $zoneId,
             'delivery_type' => 48, // Standard 48-hour delivery
             'item_type' => 1,      // Parcel
             'special_instruction' => $dto->notes ?: 'Handle with care',
@@ -270,10 +300,10 @@ class PathaoCourierService implements CourierProviderInterface
 
     public function verifyWebhookSignature(Request $request): bool
     {
-        $signature = $request->header('X-PATHAO-Signature');
+        $signature = $request->header('X-PATHAO-Signature') ?? $request->header('X-Pathao-Signature');
         $secret = $this->webhookSecret ?: $this->clientSecret;
         if (empty($signature) || empty($secret)) {
-            return true; // Allow webhook if signature not configured
+            return false; // Strictly reject if signature or secret is missing
         }
 
         $expected = hash_hmac('sha256', $request->getContent(), $secret);
@@ -334,5 +364,67 @@ class PathaoCourierService implements CourierProviderInterface
             'failed', 'delivery_failed', 'on_hold', 'hold' => 'delivery_failed',
             default => 'in_transit',
         };
+    }
+
+    public function getCities(): array
+    {
+        return Cache::remember('pathao_cities', 86400, function () {
+            try {
+                $response = $this->client()->get('/aladdin/api/v1/countries/1/city-list');
+                if ($response->successful()) {
+                    $cities = $response->json('data.data') ?? [];
+                    if (!empty($cities)) {
+                        return $cities;
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Pathao getCities failed: ' . $e->getMessage());
+            }
+            return [
+                ['city_id' => 1, 'city_name' => 'Dhaka'],
+                ['city_id' => 2, 'city_name' => 'Chittagong'],
+                ['city_id' => 3, 'city_name' => 'Sylhet'],
+                ['city_id' => 4, 'city_name' => 'Rajshahi'],
+                ['city_id' => 5, 'city_name' => 'Khulna'],
+                ['city_id' => 6, 'city_name' => 'Barishal'],
+                ['city_id' => 7, 'city_name' => 'Rangpur'],
+                ['city_id' => 8, 'city_name' => 'Mymensingh'],
+            ];
+        });
+    }
+
+    public function getZones(int $cityId): array
+    {
+        return Cache::remember("pathao_zones_{$cityId}", 86400, function () use ($cityId) {
+            try {
+                $response = $this->client()->get("/aladdin/api/v1/cities/{$cityId}/zone-list");
+                if ($response->successful()) {
+                    $zones = $response->json('data.data') ?? [];
+                    if (!empty($zones)) {
+                        return $zones;
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Pathao getZones for city {$cityId} failed: " . $e->getMessage());
+            }
+            return [
+                ['zone_id' => 1, 'zone_name' => 'City Core Zone'],
+            ];
+        });
+    }
+
+    public function getAreas(int $zoneId): array
+    {
+        return Cache::remember("pathao_areas_{$zoneId}", 86400, function () use ($zoneId) {
+            try {
+                $response = $this->client()->get("/aladdin/api/v1/zones/{$zoneId}/area-list");
+                if ($response->successful()) {
+                    return $response->json('data.data') ?? [];
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Pathao getAreas for zone {$zoneId} failed: " . $e->getMessage());
+            }
+            return [];
+        });
     }
 }

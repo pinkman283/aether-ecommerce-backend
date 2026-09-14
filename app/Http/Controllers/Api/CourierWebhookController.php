@@ -159,17 +159,62 @@ class CourierWebhookController extends Controller
             $order = $shipment->order;
             if ($order) {
                 if ($newStatus === 'delivered') {
-                    $order->update([
+                    $collected = (float) ($event->collectedAmount ?? $shipment->cod_amount);
+                    $orderUpdates = [
                         'order_status' => 'delivered',
                         'delivered_at' => now(),
-                        'payment_status' => in_array($order->payment_method, ['cash_on_delivery', 'cod']) ? 'paid' : $order->payment_status,
-                    ]);
+                        'amount_collected_courier' => $collected,
+                    ];
+                    if (in_array(strtolower($order->payment_method ?? ''), ['cash_on_delivery', 'cod'])) {
+                        if ($collected >= (float) $order->total_amount) {
+                            $orderUpdates['payment_status'] = 'paid';
+                        } elseif ($collected > 0) {
+                            $orderUpdates['payment_status'] = 'partially_paid';
+                        }
+                    }
+                    $order->update($orderUpdates);
+                } elseif (in_array($newStatus, ['returned', 'return_initiated'])) {
+                    // Trigger automated RTO tracking via OrderReturnService
+                    try {
+                        app(\App\Services\OrderReturnService::class)->handleCourierRtoEvent($shipment, [
+                            'reason' => $event->returnReason ?: $event->failureReason,
+                            'collected_amount' => (float) ($event->collectedAmount ?? 0.00),
+                            'rto_charge' => (float) ($event->courierFee ?? 0.00),
+                        ]);
+                    } catch (\Throwable $rtoEx) {
+                        Log::warning("Automated RTO dispatch failed: " . $rtoEx->getMessage());
+                    }
                 } elseif ($newStatus === 'in_transit' && in_array($order->order_status, ['pending', 'confirmed'])) {
                     $order->update([
                         'order_status' => 'processing',
                         'shipped_at' => $order->shipped_at ?: now(),
                     ]);
                 }
+
+                $timelineIcon = match($newStatus) {
+                    'delivered' => 'check',
+                    'in_transit', 'out_for_delivery' => 'truck',
+                    'delivery_failed' => 'alert',
+                    'returned', 'return_initiated' => 'rotate',
+                    default => 'check',
+                };
+                $timelineTitle = match($newStatus) {
+                    'delivered' => 'Delivered to Customer',
+                    'out_for_delivery' => 'Out for Delivery (Rider Dispatched)',
+                    'in_transit' => 'In Transit with ' . ucfirst($provider),
+                    'delivery_failed' => 'Delivery Attempt Failed',
+                    'returned', 'return_initiated' => 'RTO Initiated by Courier',
+                    default => 'Shipment Updated: ' . ucfirst(str_replace('_', ' ', $newStatus)),
+                };
+                \App\Services\OrderTimelineService::recordEvent(
+                    order: $order,
+                    eventType: $newStatus,
+                    title: $timelineTitle,
+                    description: $event->failureReason ?: "Courier ({$provider}) consignment {$shipment->consignment_id} updated to {$newStatus}.",
+                    actorName: ucfirst($provider) . ' Webhook',
+                    iconType: $timelineIcon,
+                    metadata: ['provider' => $provider, 'consignment_id' => $shipment->consignment_id, 'raw_status' => $event->courierRawStatus]
+                );
             }
 
             // Log successful webhook receipt

@@ -70,12 +70,17 @@ class InventoryCostingService
     public static function fulfillOrderAndComputeCogs(Order $order): Order
     {
         return DB::transaction(function () use ($order) {
+            // Idempotency check: if order has already computed COGS or allocated layers, skip duplicate fulfillment
+            if ($order->orderItemCostLayers()->exists() || (float)$order->cogs_amount > 0) {
+                return $order->fresh(['items.costLayers', 'posSession', 'cashier']);
+            }
+
             $totalOrderCogs = 0.00;
             $totalOrderRevenue = 0.00;
 
             foreach ($order->items as $item) {
-                $product = Product::find($item->product_id);
-                $variant = $item->variant_id ? ProductVariant::find($item->variant_id) : null;
+                $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+                $variant = $item->variant_id ? ProductVariant::where('id', $item->variant_id)->lockForUpdate()->first() : null;
                 $qtyToFulfill = $item->quantity;
 
                 $itemCogs = 0.00;
@@ -116,11 +121,17 @@ class InventoryCostingService
                         $remainingQty -= $take;
                     }
 
-                    // If order quantity exceeded available procurement cost layers, compute with latest cost or product base cost
+                    // If order quantity exceeded available procurement cost layers, compute with documented cost basis
                     if ($remainingQty > 0) {
-                        $fallbackUnitCost = (float) ($product->price * 0.5); // Baseline 50% acquisition cost if untracked
-                        $fallbackTotal = $remainingQty * $fallbackUnitCost;
-                        $itemCogs += $fallbackTotal;
+                        $baseCost = ($variant && $variant->cost_price !== null && (float)$variant->cost_price > 0)
+                            ? (float)$variant->cost_price
+                            : ($product->cost_price !== null && (float)$product->cost_price > 0 ? (float)$product->cost_price : null);
+
+                        if ($baseCost !== null) {
+                            $itemCogs += ($remainingQty * $baseCost);
+                        } else {
+                            throw new \RuntimeException("Fulfillment error: SKU '{$item->sku}' (Product: {$product->name}) has {$remainingQty} uncosted unit(s) with no valid FIFO cost layer or documented cost price. Fulfillment halted to prevent corrupted accounting.");
+                        }
                     }
 
                     // Decrement physical stock if not already decremented
@@ -189,11 +200,17 @@ class InventoryCostingService
                         $variant->increment('stock_quantity', $item->quantity);
                     }
 
-                    // 2. Re-create or restore cost layer
+                    // 2. Re-create or restore cost layer using original item COGS or documented cost
+                    $restockCost = ($item->cogs_unit_cost !== null && (float)$item->cogs_unit_cost > 0)
+                        ? (float)$item->cogs_unit_cost
+                        : (($variant && $variant->cost_price !== null && (float)$variant->cost_price > 0)
+                            ? (float)$variant->cost_price
+                            : ($product->cost_price !== null && (float)$product->cost_price > 0 ? (float)$product->cost_price : 0.00));
+
                     InventoryCostLayer::create([
                         'product_id' => $product->id,
                         'variant_id' => $variant?->id,
-                        'unit_cost' => $item->cogs_unit_cost ?: ($product->price * 0.5),
+                        'unit_cost' => $restockCost,
                         'initial_quantity' => $item->quantity,
                         'remaining_quantity' => $item->quantity,
                         'is_depleted' => false,
@@ -205,8 +222,8 @@ class InventoryCostingService
                         'variant_id' => $variant?->id,
                         'movement_type' => 'refund_restock',
                         'quantity' => $item->quantity,
-                        'unit_cost' => $item->cogs_unit_cost,
-                        'total_cost' => $item->cogs_total,
+                        'unit_cost' => $restockCost,
+                        'total_cost' => round($item->quantity * $restockCost, 2),
                         'balance_after' => $product->fresh()->stock_quantity,
                         'reference_type' => 'Order',
                         'reference_id' => $order->order_number,
@@ -232,7 +249,19 @@ class InventoryCostingService
         ?float $unitCost = null
     ): InventoryMovement {
         return DB::transaction(function () use ($product, $variant, $adjustmentQty, $reason, $actor, $unitCost) {
-            $effectiveUnitCost = $unitCost ?: (float) ($product->price * 0.5);
+            $effectiveUnitCost = $unitCost;
+            if ($effectiveUnitCost === null) {
+                if ($variant && $variant->cost_price !== null && (float)$variant->cost_price > 0) {
+                    $effectiveUnitCost = (float)$variant->cost_price;
+                } elseif ($product->cost_price !== null && (float)$product->cost_price > 0) {
+                    $effectiveUnitCost = (float)$product->cost_price;
+                }
+            }
+
+            if ($adjustmentQty > 0 && ($effectiveUnitCost === null || $effectiveUnitCost < 0)) {
+                throw new \InvalidArgumentException("Cannot increase inventory without a documented unit cost basis. Please specify the unit cost or ensure the product/variant cost price is set.");
+            }
+            $effectiveUnitCost = (float)($effectiveUnitCost ?? 0.00);
             $totalCost = abs($adjustmentQty) * $effectiveUnitCost;
 
             if ($adjustmentQty > 0) {

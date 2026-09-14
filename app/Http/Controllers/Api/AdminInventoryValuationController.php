@@ -37,20 +37,37 @@ class AdminInventoryValuationController extends Controller
 
         $products = $query->get()->map(function ($product) {
             $activeLayers = $product->activeCostLayers;
-            $totalValuation = 0.00;
+            $realFifoValuation = 0.00;
             $layerUnits = 0;
 
             foreach ($activeLayers as $layer) {
-                $totalValuation += ($layer->remaining_quantity * (float) $layer->unit_cost);
+                $realFifoValuation += ($layer->remaining_quantity * (float) $layer->unit_cost);
                 $layerUnits += $layer->remaining_quantity;
             }
 
-            // If no layers yet recorded, compute with baseline estimate
-            if ($layerUnits === 0 && $product->stock_quantity > 0) {
-                $avgUnitCost = (float) ($product->price * 0.5);
+            $costStatus = 'costed';
+            $isEstimated = false;
+            $avgUnitCost = 0.00;
+            $totalValuation = 0.00;
+
+            if ($product->stock_quantity <= 0) {
+                $costStatus = 'depleted';
+                $avgUnitCost = 0.00;
+                $totalValuation = 0.00;
+            } elseif ($layerUnits > 0) {
+                $costStatus = 'costed';
+                $avgUnitCost = round($realFifoValuation / $layerUnits, 2);
+                $totalValuation = $realFifoValuation;
+            } elseif ($product->cost_price !== null && (float)$product->cost_price > 0) {
+                $costStatus = 'opening_cost_pending_layer';
+                $isEstimated = true;
+                $avgUnitCost = (float)$product->cost_price;
                 $totalValuation = $product->stock_quantity * $avgUnitCost;
             } else {
-                $avgUnitCost = $layerUnits > 0 ? round($totalValuation / $layerUnits, 2) : (float) ($product->price * 0.5);
+                $costStatus = 'cost_not_established';
+                $isEstimated = true;
+                $avgUnitCost = null;
+                $totalValuation = 0.00;
             }
 
             $potentialRetailValue = $product->stock_quantity * (float) $product->price;
@@ -64,7 +81,12 @@ class AdminInventoryValuationController extends Controller
                 'category_id' => $product->category_id,
                 'stock_quantity' => $product->stock_quantity,
                 'retail_price' => (float) $product->price,
+                'cost_price' => $product->cost_price ? (float)$product->cost_price : null,
                 'average_unit_cost' => $avgUnitCost,
+                'cost_status' => $costStatus,
+                'is_estimated' => $isEstimated,
+                'real_fifo_units' => $layerUnits,
+                'real_fifo_valuation' => round($realFifoValuation, 2),
                 'total_inventory_cost' => round($totalValuation, 2),
                 'potential_retail_value' => round($potentialRetailValue, 2),
                 'potential_gross_margin' => round($potentialGrossMargin, 2),
@@ -76,7 +98,10 @@ class AdminInventoryValuationController extends Controller
 
         // Compute overall inventory asset metrics
         $totalUnits = $products->sum('stock_quantity');
+        $costedUnits = $products->sum('real_fifo_units');
+        $uncostedUnits = max(0, $totalUnits - $costedUnits);
         $totalAssetCost = $products->sum('total_inventory_cost');
+        $realFifoAssetCost = $products->sum('real_fifo_valuation');
         $totalRetailValue = $products->sum('potential_retail_value');
         $lowStockProducts = $products->where('stock_quantity', '>', 0)->where('stock_quantity', '<=', 10)->count();
         $outOfStockProducts = $products->where('stock_quantity', '<=', 0)->count();
@@ -102,6 +127,9 @@ class AdminInventoryValuationController extends Controller
         return response()->json([
             'summary' => [
                 'total_units' => $totalUnits,
+                'costed_units' => $costedUnits,
+                'uncosted_units' => $uncostedUnits,
+                'real_fifo_valuation' => round($realFifoAssetCost, 2),
                 'total_asset_valuation' => round($totalAssetCost, 2),
                 'total_potential_retail_value' => round($totalRetailValue, 2),
                 'low_stock_count' => $lowStockProducts,

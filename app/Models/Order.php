@@ -4,13 +4,14 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Order extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'user_id',
@@ -22,6 +23,9 @@ class Order extends Model
         'customer_email',
         'customer_phone',
         'shipping_address',
+        'shipping_city_id',
+        'shipping_zone_id',
+        'shipping_area_id',
         'billing_address',
         'subtotal',
         'tax_amount',
@@ -36,6 +40,10 @@ class Order extends Model
         'payment_method',
         'payment_transaction_id',
         'order_status',
+        'return_status',
+        'amount_collected_courier',
+        'amount_remitted_merchant',
+        'amount_refunded',
         'shipping_method',
         'tracking_code',
         'carrier',
@@ -59,6 +67,9 @@ class Order extends Model
             'shipping_amount' => 'float',
             'discount_amount' => 'float',
             'store_credit_amount' => 'float',
+            'amount_collected_courier' => 'float',
+            'amount_remitted_merchant' => 'float',
+            'amount_refunded' => 'float',
             'total_amount' => 'float',
             'cogs_amount' => 'float',
             'gross_profit' => 'float',
@@ -107,6 +118,11 @@ class Order extends Model
         return $this->hasMany(OrderItem::class);
     }
 
+    public function orderItemCostLayers(): \Illuminate\Database\Eloquent\Relations\HasManyThrough
+    {
+        return $this->hasManyThrough(OrderItemCostLayer::class, OrderItem::class);
+    }
+
     public function promotion(): BelongsTo
     {
         return $this->belongsTo(Promotion::class);
@@ -125,5 +141,20 @@ class Order extends Model
     public function latestShipment(): HasOne
     {
         return $this->hasOne(Shipment::class)->latestOfMany();
+    }
+
+    public function returns(): HasMany
+    {
+        return $this->hasMany(OrderReturn::class)->latest();
+    }
+
+    public function latestReturn(): HasOne
+    {
+        return $this->hasOne(OrderReturn::class)->latestOfMany();
+    }
+
+    public function timelineEvents(): HasMany
+    {
+        return $this->hasMany(OrderTimelineEvent::class)->orderBy('created_at', 'asc');
     }
 }

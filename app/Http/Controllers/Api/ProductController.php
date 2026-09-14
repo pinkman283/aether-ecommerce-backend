@@ -190,10 +190,10 @@ class ProductController extends Controller
             }
 
             return [
-                'featured_products' => $featuredProducts,
-                'new_arrivals' => $newArrivals,
-                'best_sellers' => $bestSellers,
-                'featured_categories' => $featuredCategories,
+                'featured_products' => $featuredProducts->values()->all(),
+                'new_arrivals' => $newArrivals->values()->all(),
+                'best_sellers' => $bestSellers->values()->all(),
+                'featured_categories' => $featuredCategories->values()->all(),
             ];
         });
 

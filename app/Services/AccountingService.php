@@ -10,6 +10,8 @@ use App\Models\GoodsReceipt;
 use App\Models\JournalEntry;
 use App\Models\JournalEntryLine;
 use App\Models\Order;
+use App\Models\OrderReturn;
+use App\Models\CourierSettlement;
 use App\Models\SupplierPayment;
 use App\Models\User;
 use Carbon\Carbon;
@@ -653,6 +655,336 @@ class AccountingService
             'reference_id' => $shipment->id,
             'reference_number' => 'RMT-' . $shipment->id . '-' . time(),
             'narration' => "Courier remittance reconciled: Order #{$shipment->order?->order_number} via {$shipment->provider}",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post journal entry for an Order Return / Refund.
+     * Debits: Account 4095 (Sales Returns & Refunds)
+     * Credits: Cash/Bank/MFS/Store Credit (liability 2020) or Accounts Receivable (1100)
+     */
+    public static function postOrderReturn(OrderReturn $return, array $options = []): ?JournalEntry
+    {
+        // Avoid duplicate entry
+        $existing = JournalEntry::where('reference_type', 'OrderReturn')
+            ->where('reference_id', $return->id)
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $order = $return->order;
+        $refundAmount = round((float) $return->refund_amount, 2);
+        $collectedByCourier = round((float) ($return->amount_collected_courier ?? 0), 2);
+        $lines = [];
+
+        if ($refundAmount > 0) {
+            // Case 1: Cash/credit refund paid to customer (Customer Return of paid order)
+            $lines[] = [
+                'account_code' => '4095', // Sales Returns & Refunds (Contra-revenue)
+                'debit' => $refundAmount,
+                'credit' => 0.00,
+                'memo' => "Sales return & refund for Return #{$return->return_number} (Order #{$order?->order_number})",
+            ];
+
+            $creditAccountCode = '1100'; // Default to A/R if customer hadn't paid
+            $refundMethod = strtolower($return->refund_method ?? 'none');
+
+            if ($refundMethod === 'store_credit') {
+                $creditAccountCode = '2020'; // Customer Advances & Store Credit liability
+            } elseif ($refundMethod === 'cash') {
+                $creditAccountCode = '1010'; // Cash on Hand
+            } elseif (in_array($refundMethod, ['bkash', 'nagad', 'rocket', 'mfs'])) {
+                $creditAccountCode = '1030'; // Digital Wallets / MFS
+            } elseif ($refundMethod === 'bank_transfer') {
+                $creditAccountCode = '1020'; // Main Bank Account
+            }
+
+            $lines[] = [
+                'account_code' => $creditAccountCode,
+                'debit' => 0.00,
+                'credit' => $refundAmount,
+                'memo' => "Refund payout via {$refundMethod} for Return #{$return->return_number}",
+            ];
+        } else {
+            // Case 2: Uncollected COD Return / RTO (Customer paid 0 or only delivery fee)
+            // Reverse product revenue and clear uncollectible Accounts Receivable
+            $productSubtotal = round((float) ($return->product_subtotal_snapshot ?: ($order?->subtotal ?? 0)), 2);
+            $shippingCharge = round((float) ($return->shipping_charge_snapshot ?: ($order?->shipping_amount ?? 0)), 2);
+            $orderTotal = round((float) ($return->order_total_snapshot ?: ($order?->total_amount ?? ($productSubtotal + $shippingCharge))), 2);
+
+            // Amount to reverse from AR is order total minus whatever courier actually collected from customer
+            $arToClear = max(0.00, round($orderTotal - $collectedByCourier, 2));
+
+            $shippingChargeReverse = ($collectedByCourier <= 0 && $shippingCharge > 0) ? min($shippingCharge, $arToClear) : 0.00;
+            $revenueToReverse = round($arToClear - $shippingChargeReverse, 2);
+
+            if ($revenueToReverse > 0) {
+                $lines[] = [
+                    'account_code' => '4095', // Sales Returns & Allowances (Contra-revenue)
+                    'debit' => $revenueToReverse,
+                    'credit' => 0.00,
+                    'memo' => "Reversal of unearned product revenue on RTO #{$return->return_number}",
+                ];
+            }
+
+            if ($shippingChargeReverse > 0) {
+                $lines[] = [
+                    'account_code' => '4030', // Shipping & Delivery Income
+                    'debit' => $shippingChargeReverse,
+                    'credit' => 0.00,
+                    'memo' => "Reversal of uncollected delivery fee on RTO #{$return->return_number}",
+                ];
+            }
+
+            if ($arToClear > 0) {
+                $lines[] = [
+                    'account_code' => '1100', // Accounts Receivable
+                    'debit' => 0.00,
+                    'credit' => $arToClear,
+                    'memo' => "Clear uncollectible A/R for refused parcel on RTO #{$return->return_number}",
+                ];
+            }
+        }
+
+        if (empty($lines)) {
+            return null;
+        }
+
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'OrderReturn',
+            'reference_id' => $return->id,
+            'reference_number' => $return->return_number,
+            'narration' => "Return & RTO settlement journal for Return #{$return->return_number} (Order #{$order?->order_number})",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post reversing journal entry for an Order Cancellation / Void.
+     * Inverts original debits and credits to cleanly clear A/R and Revenue without deleting history.
+     */
+    public static function postOrderCancellation(Order $order): ?JournalEntry
+    {
+        $existing = JournalEntry::where('reference_type', 'OrderCancellation')
+            ->where('reference_id', $order->id)
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $originalSale = JournalEntry::with('lines.account')
+            ->where('reference_type', 'Order')
+            ->where('reference_id', $order->id)
+            ->first();
+
+        if (!$originalSale) {
+            return null;
+        }
+
+        $lines = [];
+        foreach ($originalSale->lines as $line) {
+            $debit = (float) $line->credit;
+            $credit = (float) $line->debit;
+
+            $lines[] = [
+                'account_code' => $line->account?->code,
+                'chart_of_account_id' => $line->chart_of_account_id,
+                'debit' => $debit,
+                'credit' => $credit,
+                'memo' => "Reversal: " . $line->memo,
+            ];
+        }
+
+        if (empty($lines)) {
+            return null;
+        }
+
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'OrderCancellation',
+            'reference_id' => $order->id,
+            'reference_number' => 'REV-' . $order->order_number,
+            'narration' => "Complete cancellation and reversing entry for Order #{$order->order_number}",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post inventory cost reversal / write-off upon QC completion.
+     * If restocked sellable: Debit 1200 (Merchandise Inventory), Credit 5010 (COGS - Online)
+     * If damaged/loss: Debit 5030 (Inventory Shrinkage & Loss), Credit 5010 (COGS - Online)
+     */
+    public static function postInventoryReturnQc(OrderReturn $return, float $restockedCost, float $lossCost = 0.00): ?JournalEntry
+    {
+        $restockedCost = round($restockedCost, 2);
+        $lossCost = round($lossCost, 2);
+
+        if ($restockedCost <= 0 && $lossCost <= 0) {
+            return null;
+        }
+
+        // Avoid duplicate entry
+        $existing = JournalEntry::where('reference_type', 'OrderReturnQC')
+            ->where('reference_id', $return->id)
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $lines = [];
+
+        // Restocked Sellable Goods: Put back into Merchandise Inventory and relieve COGS
+        if ($restockedCost > 0) {
+            $lines[] = [
+                'account_code' => '1200', // Merchandise Inventory
+                'debit' => $restockedCost,
+                'credit' => 0.00,
+                'memo' => "Restock returned sellable goods for Return #{$return->return_number}",
+            ];
+            $lines[] = [
+                'account_code' => '5010', // COGS - Online
+                'debit' => 0.00,
+                'credit' => $restockedCost,
+                'memo' => "COGS relief for restocked items from Return #{$return->return_number}",
+            ];
+        }
+
+        // Damaged / Write-off Goods: Reclassify from COGS to Shrinkage/Damage Loss
+        if ($lossCost > 0) {
+            $lines[] = [
+                'account_code' => '5030', // Inventory Shrinkage & Loss
+                'debit' => $lossCost,
+                'credit' => 0.00,
+                'memo' => "Transit damage / write-off loss on Return #{$return->return_number}",
+            ];
+            $lines[] = [
+                'account_code' => '5010', // COGS - Online
+                'debit' => 0.00,
+                'credit' => $lossCost,
+                'memo' => "Reclassify transit loss out of ordinary COGS for Return #{$return->return_number}",
+            ];
+        }
+
+        if (empty($lines)) {
+            return null;
+        }
+
+        $header = [
+            'entry_date' => now()->toDateString(),
+            'reference_type' => 'OrderReturnQC',
+            'reference_id' => $return->id,
+            'reference_number' => "QC-{$return->return_number}",
+            'narration' => "Inventory QC restock & write-off valuation for Return #{$return->return_number}",
+            'status' => 'posted',
+        ];
+
+        return self::postJournalEntry($header, $lines);
+    }
+
+    /**
+     * Post courier settlement batch reconciliation.
+     * Debits:
+     *   - Bank Account (1020 or linked) for actual payout received
+     *   - Courier & Logistics Expense (6040) for total delivery & return fee deductions
+     *   - Variance Expense (6090) if underpaid
+     * Credits:
+     *   - Accounts Receivable (1100) for total COD collected
+     *   - Other Income (4030 / 6090) if overpaid
+     */
+    public static function postCourierSettlementBatch(CourierSettlement $settlement, ?int $bankAccountId = null): ?JournalEntry
+    {
+        $totalCollected = round((float) $settlement->total_cod_collected, 2);
+        $deliveryFees = round((float) $settlement->delivery_fees, 2);
+        $returnFees = round((float) $settlement->return_fees, 2);
+        $otherDeductions = round((float) $settlement->other_deductions, 2);
+        $actualPayout = round((float) $settlement->actual_payout, 2);
+        $variance = round((float) $settlement->variance, 2);
+
+        $totalDeductions = round($deliveryFees + $returnFees + $otherDeductions, 2);
+
+        // Determine destination bank account code
+        $bankAccountCode = '1020'; // Default Main Bank Account
+        if ($bankAccountId) {
+            $bank = BankAccount::find($bankAccountId);
+            if ($bank && $bank->chartOfAccount) {
+                $bankAccountCode = $bank->chartOfAccount->account_code;
+            }
+        }
+
+        $lines = [];
+
+        // 1. Debit Bank Account for net actual cash received
+        if ($actualPayout > 0) {
+            $lines[] = [
+                'account_code' => $bankAccountCode,
+                'debit' => $actualPayout,
+                'credit' => 0.00,
+                'memo' => "Net courier remittance deposit for batch #{$settlement->settlement_number} ({$settlement->provider})",
+            ];
+        }
+
+        // 2. Debit Courier & Logistics Expense (6040)
+        if ($totalDeductions > 0) {
+            $lines[] = [
+                'account_code' => '6040', // Courier & Logistics Expense
+                'debit' => $totalDeductions,
+                'credit' => 0.00,
+                'memo' => "Logistics & return deductions for {$settlement->provider} batch #{$settlement->settlement_number}",
+            ];
+        }
+
+        // 3. Credit Accounts Receivable (1100) for total COD collected
+        if ($totalCollected > 0) {
+            $lines[] = [
+                'account_code' => '1100', // Accounts Receivable
+                'debit' => 0.00,
+                'credit' => $totalCollected,
+                'memo' => "Clear Accounts Receivable on COD batch #{$settlement->settlement_number}",
+            ];
+        }
+
+        // 4. Handle Variance
+        // Variance = Expected Payout - Actual Payout
+        // If variance > 0: Courier short-paid. Debit Expense / A/R dispute.
+        // If variance < 0: Courier overpaid. Credit Misc Income.
+        if ($variance > 0.01) {
+            $lines[] = [
+                'account_code' => '6090', // General & Misc Expenses (Settlement Variance)
+                'debit' => $variance,
+                'credit' => 0.00,
+                'memo' => "Settlement shortfall/discrepancy on batch #{$settlement->settlement_number}",
+            ];
+        } elseif ($variance < -0.01) {
+            $lines[] = [
+                'account_code' => '6090',
+                'debit' => 0.00,
+                'credit' => abs($variance),
+                'memo' => "Settlement overpayment credit on batch #{$settlement->settlement_number}",
+            ];
+        }
+
+        if (empty($lines)) {
+            return null;
+        }
+
+        $header = [
+            'entry_date' => $settlement->settlement_date ? Carbon::parse($settlement->settlement_date)->toDateString() : now()->toDateString(),
+            'reference_type' => 'CourierSettlement',
+            'reference_id' => $settlement->id,
+            'reference_number' => $settlement->settlement_number,
+            'narration' => "Reconciled courier COD remittance batch #{$settlement->settlement_number} from {$settlement->provider}",
             'status' => 'posted',
         ];
 

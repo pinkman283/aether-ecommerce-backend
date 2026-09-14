@@ -34,6 +34,8 @@ class OrderShipmentBookingTest extends TestCase
             ]
         );
 
+        Order::withTrashed()->where('order_number', 'ORD-BOOKING-001')->forceDelete();
+
         $this->order = Order::create([
             'order_number' => 'ORD-BOOKING-001',
             'customer_name' => 'Booking Customer',
@@ -59,7 +61,7 @@ class OrderShipmentBookingTest extends TestCase
     {
         if ($this->order) {
             $this->order->shipments()->delete();
-            $this->order->delete();
+            $this->order->forceDelete();
         }
         if ($this->integration && $this->integration->name === 'Steadfast Test Provider') {
             $this->integration->delete();

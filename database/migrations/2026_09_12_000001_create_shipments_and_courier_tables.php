@@ -12,7 +12,8 @@ return new class extends Migration
     public function up(): void
     {
         // 1. Create shipments table
-        Schema::create('shipments', function (Blueprint $table) {
+        if (!Schema::hasTable('shipments')) {
+            Schema::create('shipments', function (Blueprint $table) {
             $table->id();
             $table->foreignId('order_id')->constrained('orders')->cascadeOnDelete();
             $table->string('provider', 50)->index(); // steadfast, pathao, redx
@@ -61,10 +62,12 @@ return new class extends Migration
             $table->index(['provider', 'status']);
             $table->index(['provider', 'consignment_id']);
         });
+        }
 
         // 2. Create courier_webhook_logs table
-        Schema::create('courier_webhook_logs', function (Blueprint $table) {
-            $table->id();
+        if (!Schema::hasTable('courier_webhook_logs')) {
+            Schema::create('courier_webhook_logs', function (Blueprint $table) {
+                $table->id();
             $table->string('provider', 50)->index();
             $table->string('event_type', 100)->nullable();
             $table->string('consignment_id', 100)->nullable()->index();
@@ -77,6 +80,7 @@ return new class extends Migration
             $table->timestamp('processed_at')->nullable();
             $table->timestamps();
         });
+        }
 
         // 3. Add shipping_method to orders table if not present
         if (!Schema::hasColumn('orders', 'shipping_method')) {

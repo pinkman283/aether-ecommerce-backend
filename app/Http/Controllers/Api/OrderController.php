@@ -117,7 +117,10 @@ class OrderController extends Controller
             'shipping_address.postal_code' => 'required|string',
             'shipping_address.country' => 'required|string',
             'billing_address' => 'nullable|array',
-            'payment_method' => 'required|in:credit_card,cash_on_delivery,paypal,apple_pay',
+            'shipping_city_id' => 'nullable|integer',
+            'shipping_zone_id' => 'nullable|integer',
+            'shipping_area_id' => 'nullable|integer',
+            'payment_method' => 'required|in:cash_on_delivery,cod',
             'shipping_method' => 'nullable|string|max:100',
             'coupon_code' => 'nullable|string',
             'claimed_coupon_id' => 'nullable|integer',
@@ -198,11 +201,6 @@ class OrderController extends Controller
                 $totalItemPrice = $unitPrice * $itemData['quantity'];
                 $subtotal += $totalItemPrice;
 
-                // Decrement inventory securely inside lock
-                $product->decrement('stock_quantity', $itemData['quantity']);
-                if (!empty($itemData['variant_id'])) {
-                    $variant->decrement('stock_quantity', $itemData['quantity']);
-                }
 
                 $itemsToCreate[] = [
                     'product_id' => $product->id,
@@ -254,6 +252,9 @@ class OrderController extends Controller
                 'customer_email' => $validated['customer_email'],
                 'customer_phone' => $validated['customer_phone'] ?? null,
                 'shipping_address' => $validated['shipping_address'],
+                'shipping_city_id' => $validated['shipping_city_id'] ?? null,
+                'shipping_zone_id' => $validated['shipping_zone_id'] ?? null,
+                'shipping_area_id' => $validated['shipping_area_id'] ?? null,
                 'billing_address' => $validated['billing_address'] ?? $validated['shipping_address'],
                 'subtotal' => $subtotal,
                 'tax_amount' => $tax,
@@ -262,9 +263,9 @@ class OrderController extends Controller
                 'discount_amount' => $discount,
                 'store_credit_amount' => 0.00,
                 'total_amount' => $total,
-                'payment_status' => $validated['payment_method'] === 'cash_on_delivery' ? 'pending' : 'paid',
-                'payment_method' => $validated['payment_method'],
-                'payment_transaction_id' => 'tx_' . Str::random(16),
+                'payment_status' => 'pending',
+                'payment_method' => 'cash_on_delivery',
+                'payment_transaction_id' => null,
                 'order_status' => 'pending',
                 'tracking_code' => null,
                 'carrier' => null,
@@ -298,6 +299,26 @@ class OrderController extends Controller
 
             // Update risk score
             \App\Services\CustomerRiskService::calculateCustomerRisk($customerRecord);
+
+            // Record Initial Order Placed Timeline Milestone
+            \App\Services\OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'order_placed',
+                title: 'Order Placed (Cash on Delivery)',
+                description: "Order #{$order->order_number} placed by {$order->customer_name} for " . count($itemsToCreate) . " item(s). Collectable COD: ৳" . number_format($order->total_amount, 2),
+                actorName: $order->customer_name ?: 'Customer',
+                iconType: 'check',
+                metadata: [
+                    'order_number' => $order->order_number,
+                    'payment_method' => 'cash_on_delivery',
+                    'subtotal' => $subtotal,
+                    'shipping' => $shipping,
+                    'total' => $total,
+                ]
+            );
+
+            // Send customer confirmation email & SMS
+            \App\Services\CustomerNotificationService::sendOrderConfirmation($order);
 
             return $order->load('items');
         });

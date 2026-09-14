@@ -4,12 +4,13 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class OrderItem extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'order_id',
@@ -56,5 +57,10 @@ class OrderItem extends Model
     public function costLayers(): HasMany
     {
         return $this->hasMany(OrderItemCostLayer::class);
+    }
+
+    public function returnItems(): HasMany
+    {
+        return $this->hasMany(OrderReturnItem::class);
     }
 }

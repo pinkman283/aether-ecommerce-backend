@@ -88,6 +88,7 @@ class AdminProductController extends Controller
             'category_id' => 'required|exists:categories,id',
             'brand' => 'nullable|string|max:255',
             'price' => 'required|numeric|min:0',
+            'cost_price' => 'nullable|numeric|min:0',
             'compare_at_price' => 'nullable|numeric|min:0',
             'stock_quantity' => 'required|integer|min:0',
             'short_description' => 'nullable|string',
@@ -111,6 +112,8 @@ class AdminProductController extends Controller
             'variants.*.color_hex' => 'nullable|string|max:50',
             'variants.*.stock_quantity' => 'nullable|integer|min:0',
             'variants.*.price_modifier' => 'nullable|numeric|min:0',
+            'variants.*.cost_price' => 'nullable|numeric|min:0',
+            'variants.*.barcode' => 'nullable|string|max:100',
         ]);
 
         // Normalize images list
@@ -149,6 +152,8 @@ class AdminProductController extends Controller
         $slug = Str::slug($validated['name']) . '-' . Str::random(4);
         $sku = 'PRD-' . strtoupper(Str::random(6));
 
+        $hasVariants = !empty($validated['variants']) && is_array($validated['variants']);
+
         $product = Product::create([
             'category_id' => $validated['category_id'],
             'name' => $validated['name'],
@@ -156,8 +161,9 @@ class AdminProductController extends Controller
             'brand' => $validated['brand'] ?? 'AETHER Studio',
             'sku' => $sku,
             'price' => (float) $validated['price'],
+            'cost_price' => isset($validated['cost_price']) && $validated['cost_price'] !== null ? (float) $validated['cost_price'] : null,
             'compare_at_price' => isset($validated['compare_at_price']) ? (float) $validated['compare_at_price'] : null,
-            'stock_quantity' => (int) $validated['stock_quantity'],
+            'stock_quantity' => $hasVariants ? 0 : (int) $validated['stock_quantity'],
             'short_description' => $validated['short_description'] ?? null,
             'description' => $validated['description'],
             'is_featured' => $validated['is_featured'] ?? false,
@@ -199,11 +205,11 @@ class AdminProductController extends Controller
         // Save Color & Inventory Variants
         $variantItems = $validated['variants'] ?? [];
         if (!empty($variantItems) && is_array($variantItems)) {
-            $totalVariantStock = 0;
+            $createdVariantsCount = 0;
             foreach ($variantItems as $v) {
                 if (empty($v['name']) && empty($v['color_name']) && empty($v['size'])) continue;
                 $vStock = (int)($v['stock_quantity'] ?? 0);
-                $totalVariantStock += $vStock;
+                $createdVariantsCount++;
                 $product->variants()->create([
                     'name' => $v['name'] ?? ($v['color_name'] ? ($v['color_name'] . (!empty($v['size']) ? ' / ' . $v['size'] : '')) : ($v['size'] ?? 'Standard Option')),
                     'size' => $v['size'] ?? null,
@@ -211,11 +217,13 @@ class AdminProductController extends Controller
                     'color_hex' => $v['color_hex'] ?? null,
                     'stock_quantity' => $vStock,
                     'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,
+                    'cost_price' => isset($v['cost_price']) && $v['cost_price'] !== null && $v['cost_price'] !== '' ? (float)$v['cost_price'] : null,
+                    'barcode' => !empty($v['barcode']) ? trim($v['barcode']) : null,
                     'sku' => $product->sku . '-' . strtoupper(Str::random(4)),
                 ]);
             }
-            if ($totalVariantStock > 0 || count($variantItems) > 0) {
-                $product->update(['stock_quantity' => $totalVariantStock]);
+            if ($createdVariantsCount > 0) {
+                $product->syncStockFromVariants();
             }
         }
 
@@ -247,6 +255,7 @@ class AdminProductController extends Controller
             'category_id' => 'sometimes|required|exists:categories,id',
             'brand' => 'nullable|string|max:255',
             'price' => 'sometimes|required|numeric|min:0',
+            'cost_price' => 'nullable|numeric|min:0',
             'compare_at_price' => 'nullable|numeric|min:0',
             'stock_quantity' => 'sometimes|required|integer|min:0',
             'short_description' => 'nullable|string',
@@ -270,7 +279,14 @@ class AdminProductController extends Controller
             'variants.*.color_hex' => 'nullable|string|max:50',
             'variants.*.stock_quantity' => 'nullable|integer|min:0',
             'variants.*.price_modifier' => 'nullable|numeric|min:0',
+            'variants.*.cost_price' => 'nullable|numeric|min:0',
+            'variants.*.barcode' => 'nullable|string|max:100',
         ]);
+
+        // If product has variants and variants are not part of this payload, do not allow parent stock overwrite
+        if ($product->variants()->exists() && !$request->has('variants')) {
+            unset($validated['stock_quantity']);
+        }
 
         $product->fill($validated);
         $wasDirty = $product->isDirty();
@@ -357,12 +373,11 @@ class AdminProductController extends Controller
                         'color_hex' => $v['color_hex'] ?? null,
                         'stock_quantity' => $vStock,
                         'price_modifier' => isset($v['price_modifier']) ? (float)$v['price_modifier'] : 0.00,
+                        'cost_price' => isset($v['cost_price']) && $v['cost_price'] !== null && $v['cost_price'] !== '' ? (float)$v['cost_price'] : null,
+                        'barcode' => !empty($v['barcode']) ? trim($v['barcode']) : null,
                         'sku' => $product->sku . '-' . strtoupper(Str::random(4)),
                     ]);
-                }
-                if ($totalVariantStock > 0 || count($variantItems) > 0) {
-                    $product->update(['stock_quantity' => $totalVariantStock]);
-                }
+                $product->syncStockFromVariants();
             }
             $wasDirty = true;
         }

@@ -33,6 +33,11 @@ class CourierWebhookTest extends TestCase
             ]
         );
 
+        // Clean up previous test artifacts if any
+        Order::withTrashed()->where('order_number', 'ORD-TEST-WH-001')->forceDelete();
+        Shipment::where('consignment_id', 'CID-WH-99001')->delete();
+        CourierWebhookLog::where('consignment_id', 'CID-WH-99001')->delete();
+
         // Create a test order
         $this->order = Order::create([
             'order_number' => 'ORD-TEST-WH-001',
