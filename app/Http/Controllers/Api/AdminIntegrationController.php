@@ -18,7 +18,7 @@ class AdminIntegrationController extends Controller
 
         $transformed = $integrations->map(function ($item) {
             $data = $item->toArray();
-            $data['credentials'] = $item->getMaskedCredentials();
+            $data['credentials'] = $item->credentials;
             return $data;
         });
 
@@ -41,7 +41,7 @@ class AdminIntegrationController extends Controller
 
         $integration = Integration::where('provider', $provider)->firstOrFail();
         $data = $integration->toArray();
-        $data['credentials'] = $integration->getMaskedCredentials();
+        $data['credentials'] = $integration->credentials;
 
         return response()->json([
             'integration' => $data,
@@ -110,7 +110,7 @@ class AdminIntegrationController extends Controller
         );
 
         $response = $integration->toArray();
-        $response['credentials'] = $integration->getMaskedCredentials();
+        $response['credentials'] = $integration->credentials;
 
         return response()->json([
             'message' => "Integration '{$integration->name}' updated successfully.",

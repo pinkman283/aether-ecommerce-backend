@@ -9,6 +9,7 @@ use App\Models\Integration;
 use App\Models\Order;
 use App\Models\Shipment;
 use App\Services\AccountingService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -87,119 +88,130 @@ class CourierManager
      */
     public function bookShipment(Order $order, array $params = []): Shipment
     {
-        // 1. Prevent duplicate active booking
-        $existingActive = $order->shipments()
-            ->whereNotIn('status', ['cancelled', 'delivery_failed'])
-            ->first();
+        $lockKey = "courier_book_order_{$order->id}";
+        $lock = Cache::lock($lockKey, 20);
 
-        if ($existingActive) {
-            throw new \RuntimeException("Order already has an active consignment (#{$existingActive->consignment_id}) with provider {$existingActive->provider}.");
+        if (!$lock->get()) {
+            throw new \RuntimeException("A courier booking for Order #{$order->order_number} is already in progress. Please wait a moment.");
         }
 
-        $provider = $params['provider'] ?? $this->getDefaultProvider();
-        $service = $this->driver($provider);
+        try {
+            // 1. Prevent duplicate active booking
+            $existingActive = $order->shipments()
+                ->whereNotIn('status', ['cancelled', 'delivery_failed'])
+                ->first();
 
-        // 2. Prepare standardized booking DTO
-        $dto = ShipmentBookingDTO::fromOrder($order, $params);
-
-        // 3. Dispatch external courier API request
-        $result = $service->createShipment($dto);
-
-        if (!$result->success) {
-            throw new \RuntimeException($result->errorMessage ?: "Failed to book shipment with {$provider}.");
-        }
-
-        // 4. Persist shipment record in database
-        return DB::transaction(function () use ($order, $provider, $dto, $result, $params) {
-            $shipment = Shipment::create([
-                'order_id' => $order->id,
-                'provider' => $provider,
-                'consignment_id' => $result->consignmentId,
-                'tracking_code' => $result->trackingCode ?: $result->consignmentId,
-                'tracking_url' => $result->trackingUrl,
-                'status' => 'booked',
-                'courier_status_raw' => $result->courierStatus ?: 'booked',
-                'recipient_name' => $dto->recipientName,
-                'recipient_phone' => $dto->recipientPhone,
-                'recipient_address' => $dto->recipientAddress,
-                'cod_amount' => $dto->codAmount,
-                'courier_charge' => $result->courierCharge,
-                'weight' => $dto->weight,
-                'delivery_area' => $dto->deliveryArea,
-                'pickup_store_id' => $dto->pickupStoreId,
-                'notes' => $dto->notes,
-                'booked_at' => now(),
-                'last_synced_at' => now(),
-                'raw_response' => $result->rawResponse,
-                'metadata' => $params['metadata'] ?? null,
-            ]);
-
-            // 5. Update Order carrier & tracking for seamless backward compatibility
-            $orderUpdates = [
-                'carrier' => ucfirst($provider),
-                'tracking_code' => $shipment->tracking_code,
-                'order_status' => 'shipped',
-                'shipped_at' => $order->shipped_at ?: now(),
-            ];
-            if (!empty($params['recipient_city_id'])) {
-                $orderUpdates['shipping_city_id'] = (int) $params['recipient_city_id'];
+            if ($existingActive) {
+                throw new \RuntimeException("Order already has an active consignment (#{$existingActive->consignment_id}) with provider {$existingActive->provider}.");
             }
-            if (!empty($params['recipient_zone_id'])) {
-                $orderUpdates['shipping_zone_id'] = (int) $params['recipient_zone_id'];
-            }
-            if (!empty($params['recipient_area_id'])) {
-                $orderUpdates['shipping_area_id'] = (int) $params['recipient_area_id'];
-            }
-            $order->update($orderUpdates);
 
-            // 6. Record in Order Lifecycle Timeline
-            try {
-                \App\Services\OrderTimelineService::recordEvent(
-                    order: $order,
-                    eventType: 'courier_booked',
-                    title: 'Courier Booked',
-                    description: "Booked with " . ucfirst($shipment->provider) . " (Consignment: {$shipment->consignment_id}, Tracking: {$shipment->tracking_code})",
-                    actorType: auth()->check() ? 'admin' : 'system',
-                    actorId: auth()->id(),
-                    actorName: auth()->user()?->name ?? 'System Admin',
-                    metadata: [
-                        'provider' => $shipment->provider,
-                        'consignment_id' => $shipment->consignment_id,
-                        'tracking_code' => $shipment->tracking_code,
-                        'cod_amount' => $shipment->cod_amount,
-                    ]
+            $provider = $params['provider'] ?? $this->getDefaultProvider();
+            $service = $this->driver($provider);
+
+            // 2. Prepare standardized booking DTO
+            $dto = ShipmentBookingDTO::fromOrder($order, $params);
+
+            // 3. Dispatch external courier API request
+            $result = $service->createShipment($dto);
+
+            if (!$result->success) {
+                throw new \RuntimeException($result->errorMessage ?: "Failed to book shipment with {$provider}.");
+            }
+
+            // 4. Persist shipment record in database
+            return DB::transaction(function () use ($order, $provider, $dto, $result, $params) {
+                $shipment = Shipment::create([
+                    'order_id' => $order->id,
+                    'provider' => $provider,
+                    'consignment_id' => $result->consignmentId,
+                    'tracking_code' => $result->trackingCode ?: $result->consignmentId,
+                    'tracking_url' => $result->trackingUrl,
+                    'status' => 'booked',
+                    'courier_status_raw' => $result->courierStatus ?: 'booked',
+                    'recipient_name' => $dto->recipientName,
+                    'recipient_phone' => $dto->recipientPhone,
+                    'recipient_address' => $dto->recipientAddress,
+                    'cod_amount' => $dto->codAmount,
+                    'courier_charge' => $result->courierCharge,
+                    'weight' => $dto->weight,
+                    'delivery_area' => $dto->deliveryArea,
+                    'pickup_store_id' => $dto->pickupStoreId,
+                    'notes' => $dto->notes,
+                    'booked_at' => now(),
+                    'last_synced_at' => now(),
+                    'raw_response' => $result->rawResponse,
+                    'metadata' => $params['metadata'] ?? null,
+                ]);
+
+                // 5. Update Order carrier & tracking for seamless backward compatibility
+                $orderUpdates = [
+                    'carrier' => ucfirst($provider),
+                    'tracking_code' => $shipment->tracking_code,
+                    'order_status' => 'shipped',
+                    'shipped_at' => $order->shipped_at ?: now(),
+                ];
+                if (!empty($params['recipient_city_id'])) {
+                    $orderUpdates['shipping_city_id'] = (int) $params['recipient_city_id'];
+                }
+                if (!empty($params['recipient_zone_id'])) {
+                    $orderUpdates['shipping_zone_id'] = (int) $params['recipient_zone_id'];
+                }
+                if (!empty($params['recipient_area_id'])) {
+                    $orderUpdates['shipping_area_id'] = (int) $params['recipient_area_id'];
+                }
+                $order->update($orderUpdates);
+
+                // 6. Record in Order Lifecycle Timeline
+                try {
+                    \App\Services\OrderTimelineService::recordEvent(
+                        order: $order,
+                        eventType: 'courier_booked',
+                        title: 'Courier Booked',
+                        description: "Booked with " . ucfirst($shipment->provider) . " (Consignment: {$shipment->consignment_id}, Tracking: {$shipment->tracking_code})",
+                        actorType: auth()->check() ? 'admin' : 'system',
+                        actorId: auth()->id(),
+                        actorName: auth()->user()?->name ?? 'System Admin',
+                        metadata: [
+                            'provider' => $shipment->provider,
+                            'consignment_id' => $shipment->consignment_id,
+                            'tracking_code' => $shipment->tracking_code,
+                            'cod_amount' => $shipment->cod_amount,
+                        ]
+                    );
+                } catch (\Throwable $e) {
+                    Log::warning('Failed to record courier_booked timeline event: ' . $e->getMessage());
+                }
+
+                // 7. Record Audit Log
+                AuditLog::log(
+                    auth()->user(),
+                    'courier.booked',
+                    'Shipment',
+                    $shipment->id,
+                    "Booked parcel with {$provider} for Order #{$order->order_number}. Consignment: {$shipment->consignment_id}",
+                    null,
+                    $shipment->toArray()
                 );
-            } catch (\Throwable $e) {
-                Log::warning('Failed to record courier_booked timeline event: ' . $e->getMessage());
-            }
 
-            // 7. Record Audit Log
-            AuditLog::log(
-                auth()->user(),
-                'courier.booked',
-                'Shipment',
-                $shipment->id,
-                "Booked parcel with {$provider} for Order #{$order->order_number}. Consignment: {$shipment->consignment_id}",
-                null,
-                $shipment->toArray()
-            );
+                // 8. Post accounting entry if courier expense is known
+                try {
+                    AccountingService::postCourierBooking($shipment);
+                } catch (\Throwable $e) {
+                    Log::warning('Courier booking accounting entry skipped: ' . $e->getMessage());
+                }
 
-            // 8. Post accounting entry if courier expense is known
-            try {
-                AccountingService::postCourierBooking($shipment);
-            } catch (\Throwable $e) {
-                Log::warning('Courier booking accounting entry skipped: ' . $e->getMessage());
-            }
+                // 9. Dispatch customer notification
+                try {
+                    \App\Services\CustomerNotificationService::sendShipmentDispatched($order, $shipment);
+                } catch (\Throwable $e) {
+                    Log::warning('Dispatch customer notification skipped: ' . $e->getMessage());
+                }
 
-            // 9. Dispatch customer notification
-            try {
-                \App\Services\CustomerNotificationService::sendShipmentDispatched($order, $shipment);
-            } catch (\Throwable $e) {
-                Log::warning('Dispatch customer notification skipped: ' . $e->getMessage());
-            }
-
-            return $shipment;
-        });
+                return $shipment;
+            });
+        } finally {
+            optional($lock)->release();
+        }
     }
 
     /**
@@ -260,5 +272,21 @@ class CourierManager
         }
 
         return $shipment;
+    }
+
+    /**
+     * Calculate delivery charge with courier provider if supported
+     */
+    public function calculateDeliveryPrice(string $provider, array $params): array
+    {
+        $service = $this->driver($provider);
+        if (method_exists($service, 'calculatePrice')) {
+            return $service->calculatePrice($params);
+        }
+
+        return [
+            'success' => false,
+            'message' => "Courier provider [{$provider}] does not support dynamic price calculation.",
+        ];
     }
 }

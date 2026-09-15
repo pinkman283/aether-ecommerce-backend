@@ -288,6 +288,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/orders/courier/pathao/zones/{cityId}', [AdminOrderController::class, 'getPathaoZones']);
     Route::get('/orders/courier/pathao/areas/{zoneId}', [AdminOrderController::class, 'getPathaoAreas']);
     Route::get('/orders/{id}/courier-options', [AdminOrderController::class, 'getCourierOptions']);
+    Route::post('/orders/{id}/courier/calculate-price', [AdminOrderController::class, 'calculateCourierPrice']);
     Route::post('/orders/{id}/shipments', [AdminOrderController::class, 'bookShipment']);
     Route::get('/orders/{id}/shipments/{shipmentId}/track', [AdminOrderController::class, 'trackShipment']);
     Route::post('/orders/{id}/shipments/{shipmentId}/cancel', [AdminOrderController::class, 'cancelShipment']);

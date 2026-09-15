@@ -769,5 +769,49 @@ class AdminOrderController extends Controller
             return response()->json(['areas' => [], 'error' => $e->getMessage()], 200);
         }
     }
+
+    /**
+     * Calculate courier delivery charge and COD estimate dynamically
+     */
+    public function calculateCourierPrice(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
+        $order = Order::findOrFail($id);
+
+        $validated = $request->validate([
+            'provider' => 'required|string|in:pathao,steadfast,redx',
+            'recipient_city_id' => 'required|integer',
+            'recipient_zone_id' => 'required|integer',
+            'recipient_area_id' => 'nullable|integer',
+            'weight' => 'required|numeric|min:0.05|max:50',
+            'pickup_store_id' => 'nullable|string',
+            'delivery_type' => 'nullable|integer|in:48,12',
+        ]);
+
+        try {
+            $courierManager = app(\App\Services\Courier\CourierManager::class);
+            $result = $courierManager->calculateDeliveryPrice($validated['provider'], $validated);
+
+            if (!$result['success']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $result['message'] ?? 'Failed to calculate courier delivery price.',
+                ], 422);
+            }
+
+            return response()->json([
+                'success' => true,
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'pricing' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Price calculation error: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }
 

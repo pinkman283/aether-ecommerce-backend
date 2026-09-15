@@ -206,15 +206,17 @@ class CourierWebhookController extends Controller
                     'returned', 'return_initiated' => 'RTO Initiated by Courier',
                     default => 'Shipment Updated: ' . ucfirst(str_replace('_', ' ', $newStatus)),
                 };
-                \App\Services\OrderTimelineService::recordEvent(
-                    order: $order,
-                    eventType: $newStatus,
-                    title: $timelineTitle,
-                    description: $event->failureReason ?: "Courier ({$provider}) consignment {$shipment->consignment_id} updated to {$newStatus}.",
-                    actorName: ucfirst($provider) . ' Webhook',
-                    iconType: $timelineIcon,
-                    metadata: ['provider' => $provider, 'consignment_id' => $shipment->consignment_id, 'raw_status' => $event->courierRawStatus]
-                );
+                if ($oldStatus !== $newStatus) {
+                    \App\Services\OrderTimelineService::recordEvent(
+                        order: $order,
+                        eventType: $newStatus,
+                        title: $timelineTitle,
+                        description: $event->failureReason ?: "Courier ({$provider}) consignment {$shipment->consignment_id} updated to {$newStatus}.",
+                        actorName: ucfirst($provider) . ' Webhook',
+                        iconType: $timelineIcon,
+                        metadata: ['provider' => $provider, 'consignment_id' => $shipment->consignment_id, 'raw_status' => $event->courierRawStatus]
+                    );
+                }
             }
 
             // Log successful webhook receipt
@@ -230,15 +232,17 @@ class CourierWebhookController extends Controller
                 'processed_at' => now(),
             ]);
 
-            AuditLog::log(
-                null,
-                'courier.webhook_sync',
-                'Shipment',
-                $shipment->id,
-                "Webhook updated Consignment #{$shipment->consignment_id} ({$provider}) to [{$newStatus}]",
-                ['status' => $oldStatus],
-                ['status' => $newStatus, 'raw' => $event->courierRawStatus]
-            );
+            if ($oldStatus !== $newStatus) {
+                AuditLog::log(
+                    null,
+                    'courier.webhook_sync',
+                    'Shipment',
+                    $shipment->id,
+                    "Webhook updated Consignment #{$shipment->consignment_id} ({$provider}) to [{$newStatus}]",
+                    ['status' => $oldStatus],
+                    ['status' => $newStatus, 'raw' => $event->courierRawStatus]
+                );
+            }
         });
 
         return response()->json([

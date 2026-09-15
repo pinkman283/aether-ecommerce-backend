@@ -12,13 +12,17 @@ class CourierWebhookSecurityTest extends TestCase
 {
     public function test_pathao_webhook_rejects_missing_or_invalid_signature(): void
     {
+        $existing = Integration::where('provider', 'pathao')->first();
+        $creds = $existing ? ($existing->credentials ?? []) : [];
+        $creds['webhook_secret'] = 'supersecretkey123';
+
         Integration::updateOrCreate(
             ['provider' => 'pathao'],
             [
                 'name' => 'Pathao Courier',
                 'category' => 'courier',
                 'is_enabled' => true,
-                'credentials' => ['webhook_secret' => 'supersecretkey123'],
+                'credentials' => $creds,
             ]
         );
 
@@ -39,6 +43,15 @@ class CourierWebhookSecurityTest extends TestCase
         ]);
 
         $responseWithBadSig->assertStatus(401);
+
+        // Restore clean credentials without webhook_secret
+        $clean = Integration::where('provider', 'pathao')->first();
+        if ($clean) {
+            $c = $clean->credentials ?? [];
+            unset($c['webhook_secret']);
+            $clean->credentials = $c;
+            $clean->save();
+        }
     }
 
     public function test_steadfast_webhook_rejects_invalid_token(): void

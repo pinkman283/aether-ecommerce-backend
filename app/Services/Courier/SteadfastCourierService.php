@@ -47,7 +47,11 @@ class SteadfastCourierService implements CourierProviderInterface
 
     protected function client()
     {
-        return Http::baseUrl($this->baseUrl)
+        $client = Http::baseUrl($this->baseUrl);
+        if (app()->environment('local', 'testing') || $this->isTestMode || empty(ini_get('curl.cainfo'))) {
+            $client = $client->withoutVerifying();
+        }
+        return $client
             ->timeout(15)
             ->withHeaders([
                 'Api-Key' => $this->apiKey,
