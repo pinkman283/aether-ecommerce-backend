@@ -275,6 +275,13 @@ class AdminBrandLogoController extends Controller
         ]);
 
         $faviconUrl = trim($validated['favicon_url'] ?? '');
+
+        // Physically delete previous favicon file if it changed
+        $oldFavicon = Setting::get('store_favicon');
+        if (!empty($oldFavicon) && $oldFavicon !== $faviconUrl) {
+            $this->deleteBrandingStorageFile($oldFavicon);
+        }
+
         Setting::set('store_favicon', $faviconUrl, 'branding', 'string', 'Store Favicon');
         Cache::forget('api_storefront_theme_settings');
 
@@ -284,7 +291,7 @@ class AdminBrandLogoController extends Controller
             'Setting',
             null,
             $faviconUrl ? "Updated store browser favicon" : "Removed store browser favicon",
-            null,
+            ['store_favicon' => $oldFavicon],
             ['store_favicon' => $faviconUrl]
         );
 
@@ -301,6 +308,11 @@ class AdminBrandLogoController extends Controller
     {
         $this->checkPermission($request, 'theme.manage', 'settings.manage');
 
+        $oldFavicon = Setting::get('store_favicon');
+        if (!empty($oldFavicon)) {
+            $this->deleteBrandingStorageFile($oldFavicon);
+        }
+
         Setting::set('store_favicon', '', 'branding', 'string', 'Store Favicon');
         Cache::forget('api_storefront_theme_settings');
 
@@ -310,7 +322,7 @@ class AdminBrandLogoController extends Controller
             'Setting',
             null,
             "Removed store browser favicon",
-            null,
+            ['store_favicon' => $oldFavicon],
             ['store_favicon' => '']
         );
 
@@ -318,6 +330,36 @@ class AdminBrandLogoController extends Controller
             'message' => 'Favicon removed successfully.',
             'favicon' => '',
         ]);
+    }
+
+    /**
+     * Physically remove previous branding storage file if it exists on the public disk.
+     */
+    private function deleteBrandingStorageFile(?string $url): void
+    {
+        if (empty($url)) {
+            return;
+        }
+
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!$path) {
+            $path = $url;
+        }
+
+        $path = explode('?', $path)[0];
+        $storagePrefix = '/storage/';
+        if (str_starts_with($path, $storagePrefix)) {
+            $relPath = substr($path, strlen($storagePrefix));
+        } elseif (str_starts_with($path, 'branding/')) {
+            $relPath = $path;
+        } else {
+            $filename = basename($path);
+            $relPath = 'branding/' . $filename;
+        }
+
+        if (!empty($relPath) && Storage::disk('public')->exists($relPath)) {
+            Storage::disk('public')->delete($relPath);
+        }
     }
 
     /**
