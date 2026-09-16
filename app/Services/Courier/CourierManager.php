@@ -168,10 +168,11 @@ class CourierManager
                         eventType: 'courier_booked',
                         title: 'Courier Booked',
                         description: "Booked with " . ucfirst($shipment->provider) . " (Consignment: {$shipment->consignment_id}, Tracking: {$shipment->tracking_code})",
-                        actorType: auth()->check() ? 'admin' : 'system',
-                        actorId: auth()->id(),
                         actorName: auth()->user()?->name ?? 'System Admin',
+                        iconType: 'truck',
                         metadata: [
+                            'actor_type' => auth()->check() ? 'admin' : 'system',
+                            'actor_id' => auth()->id(),
                             'provider' => $shipment->provider,
                             'consignment_id' => $shipment->consignment_id,
                             'tracking_code' => $shipment->tracking_code,
