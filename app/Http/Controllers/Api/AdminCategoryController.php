@@ -27,7 +27,7 @@ class AdminCategoryController extends Controller
         $this->checkPermission($request, 'categories.manage');
 
         $request->validate([
-            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,svg,avif|max:10240',
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif|max:10240',
         ]);
 
         $file = $request->file('image');
@@ -56,6 +56,9 @@ class AdminCategoryController extends Controller
             'badge' => 'nullable|string|max:50',
             'is_featured' => 'boolean',
             'display_order' => 'integer',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
+            'image_alt' => 'nullable|string|max:255',
         ]);
 
         $slug = Str::slug($validated['name']);
@@ -73,6 +76,9 @@ class AdminCategoryController extends Controller
             'badge' => $validated['badge'] ?? null,
             'is_featured' => $validated['is_featured'] ?? false,
             'display_order' => $validated['display_order'] ?? 0,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
+            'image_alt' => $validated['image_alt'] ?? null,
         ]);
 
         AuditLog::log(
@@ -105,6 +111,9 @@ class AdminCategoryController extends Controller
             'badge' => 'nullable|string|max:50',
             'is_featured' => 'boolean',
             'display_order' => 'integer',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
+            'image_alt' => 'nullable|string|max:255',
         ]);
 
         if (array_key_exists('parent_id', $validated) && $validated['parent_id']) {

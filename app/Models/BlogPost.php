@@ -24,6 +24,9 @@ class BlogPost extends Model
         'status',
         'views_count',
         'published_at',
+        'meta_title',
+        'meta_description',
+        'featured_image_alt',
     ];
 
     protected function casts(): array

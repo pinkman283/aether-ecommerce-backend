@@ -242,7 +242,7 @@ class AdminBannerController extends Controller
         $this->checkPermission($request, 'theme.manage');
 
         $request->validate([
-            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,svg,avif|max:10240',
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif|max:10240',
         ]);
 
         $file = $request->file('image');

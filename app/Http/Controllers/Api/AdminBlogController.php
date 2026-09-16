@@ -107,6 +107,9 @@ class AdminBlogController extends Controller
             'status' => 'nullable|in:published,draft,archived',
             'tag_ids' => 'nullable|array',
             'tag_ids.*' => 'exists:blog_tags,id',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
+            'featured_image_alt' => 'nullable|string|max:255',
         ]);
 
         $slug = !empty($validated['slug']) ? Str::slug($validated['slug']) : Str::slug($validated['title']);
@@ -124,6 +127,9 @@ class AdminBlogController extends Controller
             'author_id' => $request->user()->id,
             'status' => $validated['status'] ?? 'draft',
             'published_at' => ($validated['status'] ?? 'draft') === 'published' ? now() : null,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
+            'featured_image_alt' => $validated['featured_image_alt'] ?? null,
             'views_count' => 0,
         ]);
 
@@ -164,6 +170,9 @@ class AdminBlogController extends Controller
             'status' => 'nullable|in:published,draft,archived',
             'tag_ids' => 'nullable|array',
             'tag_ids.*' => 'exists:blog_tags,id',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
+            'featured_image_alt' => 'nullable|string|max:255',
         ]);
 
         $slug = !empty($validated['slug']) ? Str::slug($validated['slug']) : Str::slug($validated['title']);
@@ -185,6 +194,9 @@ class AdminBlogController extends Controller
             'category_id' => $validated['category_id'] ?? null,
             'status' => $validated['status'] ?? $post->status,
             'published_at' => $publishedAt,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
+            'featured_image_alt' => $validated['featured_image_alt'] ?? null,
         ]);
 
         if (isset($validated['tag_ids'])) {
@@ -267,6 +279,8 @@ class AdminBlogController extends Controller
             'name' => 'required|string|max:100|unique:blog_categories,name',
             'slug' => 'nullable|string|max:100|unique:blog_categories,slug',
             'description' => 'nullable|string|max:500',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
         ]);
 
         $slug = !empty($validated['slug']) ? Str::slug($validated['slug']) : Str::slug($validated['name']);
@@ -275,6 +289,8 @@ class AdminBlogController extends Controller
             'name' => $validated['name'],
             'slug' => $slug,
             'description' => $validated['description'] ?? null,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
         ]);
 
         return response()->json([
@@ -293,6 +309,8 @@ class AdminBlogController extends Controller
             'name' => 'required|string|max:100|unique:blog_categories,name,' . $id,
             'slug' => 'nullable|string|max:100|unique:blog_categories,slug,' . $id,
             'description' => 'nullable|string|max:500',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
         ]);
 
         $slug = !empty($validated['slug']) ? Str::slug($validated['slug']) : Str::slug($validated['name']);
@@ -301,6 +319,8 @@ class AdminBlogController extends Controller
             'name' => $validated['name'],
             'slug' => $slug,
             'description' => $validated['description'] ?? null,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
         ]);
 
         return response()->json([

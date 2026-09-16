@@ -63,7 +63,7 @@ class AdminProductController extends Controller
         $this->checkPermission($request, 'products.manage');
 
         $request->validate([
-            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,svg,avif|max:10240',
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif|max:10240',
         ]);
 
         $file = $request->file('image');
@@ -97,6 +97,8 @@ class AdminProductController extends Controller
             'is_new_arrival' => 'boolean',
             'is_best_seller' => 'boolean',
             'is_active' => 'boolean',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
             'image_url' => 'nullable|string',
             'images' => 'nullable|array',
             'images.*.image_url' => 'required_with:images|string',
@@ -172,6 +174,8 @@ class AdminProductController extends Controller
             'is_active' => $validated['is_active'] ?? true,
             'rating_average' => 0.00,
             'review_count' => 0,
+            'meta_title' => $validated['meta_title'] ?? null,
+            'meta_description' => $validated['meta_description'] ?? null,
             'specifications' => $validated['specifications'] ?? [],
             'tags' => $validated['tags'] ?? [],
         ]);
@@ -196,7 +200,7 @@ class AdminProductController extends Controller
         foreach ($imageItems as $idx => $img) {
             $product->images()->create([
                 'image_url' => $img['image_url'],
-                'alt_text' => $img['alt_text'] ?? $product->name,
+                'alt_text' => !empty($img['alt_text']) ? $img['alt_text'] : null,
                 'is_primary' => $imageItems[$idx]['_calculated_primary'],
                 'display_order' => $img['display_order'] ?? $idx,
             ]);
@@ -264,6 +268,8 @@ class AdminProductController extends Controller
             'is_new_arrival' => 'boolean',
             'is_best_seller' => 'boolean',
             'is_active' => 'boolean',
+            'meta_title' => 'nullable|string|max:255',
+            'meta_description' => 'nullable|string',
             'image_url' => 'nullable|string',
             'images' => 'nullable|array',
             'images.*.image_url' => 'required_with:images|string',
@@ -348,7 +354,7 @@ class AdminProductController extends Controller
             foreach ($imageItems as $idx => $img) {
                 $product->images()->create([
                     'image_url' => $img['image_url'],
-                    'alt_text' => $img['alt_text'] ?? $product->name,
+                    'alt_text' => !empty($img['alt_text']) ? $img['alt_text'] : null,
                     'is_primary' => $imageItems[$idx]['_calculated_primary'],
                     'display_order' => $img['display_order'] ?? $idx,
                 ]);

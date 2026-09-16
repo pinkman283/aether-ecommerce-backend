@@ -29,6 +29,8 @@ class Product extends Model
         'is_new_arrival',
         'is_best_seller',
         'is_active',
+        'meta_title',
+        'meta_description',
         'rating_average',
         'review_count',
         'tags',

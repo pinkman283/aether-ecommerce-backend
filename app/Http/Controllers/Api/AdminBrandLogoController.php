@@ -248,7 +248,7 @@ class AdminBrandLogoController extends Controller
         $this->checkPermission($request, 'theme.manage', 'settings.manage');
 
         $request->validate([
-            'image' => 'required|file|mimes:jpeg,png,jpg,webp,svg,gif,ico,avif|max:10240',
+            'image' => 'required|file|mimes:jpeg,png,jpg,webp,gif,ico,avif|max:10240',
         ]);
 
         $file = $request->file('image');

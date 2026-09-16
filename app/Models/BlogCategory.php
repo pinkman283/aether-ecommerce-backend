@@ -16,6 +16,8 @@ class BlogCategory extends Model
         'slug',
         'description',
         'status',
+        'meta_title',
+        'meta_description',
     ];
 
     protected static function booted()

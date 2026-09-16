@@ -21,6 +21,9 @@ class Category extends Model
         'badge',
         'is_featured',
         'display_order',
+        'meta_title',
+        'meta_description',
+        'image_alt',
     ];
 
     protected function casts(): array
