@@ -121,6 +121,8 @@ class AdminSettingsController extends Controller
             'pwa_manifest' => $decode('pwa_manifest', []),
             'notification_templates' => $decode('notification_templates', []),
             'business_contact' => $decode('business_contact', []),
+            'mail_senders' => $decode('mail_senders', []),
+            'mail_configuration' => $decode('mail_configuration', []),
             'general' => [
                 'store_name' => $settings['store_name']->value ?? 'AETHER Audio',
                 'support_email' => $settings['support_email']->value ?? 'ops@aether-audio.test',

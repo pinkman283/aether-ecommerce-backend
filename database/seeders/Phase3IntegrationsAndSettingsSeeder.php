@@ -484,6 +484,20 @@ class Phase3IntegrationsAndSettingsSeeder extends Seeder
                     'currency_code' => 'BDT',
                 ]),
             ],
+            [
+                'key' => 'mail_senders',
+                'group' => 'mail',
+                'type' => 'json',
+                'label' => 'Email Sender Routing',
+                'value' => json_encode([
+                    'order_confirmed'  => ['address' => '', 'name' => '', 'reply_to' => ''],
+                    'order_shipped'    => ['address' => '', 'name' => '', 'reply_to' => ''],
+                    'order_delivered'  => ['address' => '', 'name' => '', 'reply_to' => ''],
+                    'order_cancelled'  => ['address' => '', 'name' => '', 'reply_to' => ''],
+                    'auth'             => ['address' => '', 'name' => '', 'reply_to' => ''],
+                    'staff_invitation' => ['address' => '', 'name' => '', 'reply_to' => ''],
+                ]),
+            ],
         ];
 
         foreach ($richSettings as $item) {

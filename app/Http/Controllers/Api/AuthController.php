@@ -4,16 +4,23 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\PendingRegistration;
+use App\Models\EmailOtp;
+use App\Services\MailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    public function register(Request $request): JsonResponse
+    /**
+     * Step 1: Request Registration OTP
+     */
+    public function registerRequest(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255',
@@ -22,16 +29,66 @@ class AuthController extends Controller
             'phone' => 'nullable|string|max:30',
         ]);
 
+        $otp = (string) random_int(100000, 999999);
+        $otpHash = Hash::make($otp);
+
+        PendingRegistration::updateOrCreate(
+            ['email' => $validated['email']],
+            [
+                'name' => $validated['name'],
+                'password_hash' => Hash::make($validated['password']),
+                'phone' => $validated['phone'] ?? null,
+                'otp_hash' => $otpHash,
+                'attempts' => 0,
+                'expires_at' => now()->addMinutes(10),
+            ]
+        );
+
+        MailService::sendOtp($validated['email'], $otp, 'registration');
+
+        return response()->json([
+            'message' => 'OTP sent to your email address.',
+        ]);
+    }
+
+    /**
+     * Step 2: Verify Registration OTP & Create User
+     */
+    public function registerVerify(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|string|email|max:255',
+            'otp' => 'required|string|size:6',
+        ]);
+
+        $pending = PendingRegistration::where('email', $validated['email'])->first();
+
+        if (!$pending || $pending->expires_at < now()) {
+            throw ValidationException::withMessages(['otp' => ['The OTP has expired or is invalid.']]);
+        }
+
+        if ($pending->attempts >= 5) {
+            throw ValidationException::withMessages(['otp' => ['Too many failed attempts. Please request a new OTP.']]);
+        }
+
+        if (!Hash::check($validated['otp'], $pending->otp_hash)) {
+            $pending->increment('attempts');
+            throw ValidationException::withMessages(['otp' => ['The provided OTP is incorrect.']]);
+        }
+
+        // OTP is valid. Create user.
         $user = User::create([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
+            'name' => $pending->name,
+            'email' => $pending->email,
+            'password' => $pending->password_hash,
             'role' => 'customer',
-            'phone' => $validated['phone'] ?? null,
+            'phone' => $pending->phone,
             'avatar' => 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
         ]);
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $pending->delete(); // Consume OTP
+
+        $token = $user->createToken('auth_token', ['customer:access'])->plainTextToken;
 
         return response()->json([
             'message' => 'User registered successfully',
@@ -47,6 +104,9 @@ class AuthController extends Controller
         ], 201);
     }
 
+    /**
+     * Login with Brute-Force Protection
+     */
     public function login(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -60,11 +120,44 @@ class AuthController extends Controller
             ->orWhere('phone', $loginInput)
             ->first();
 
-        if (!$user || !Hash::check($validated['password'], $user->password)) {
+        if (!$user) {
             throw ValidationException::withMessages([
-                'email' => ['The provided credentials do not match our records.'],
+                'email' => ['Invalid email or password.'],
             ]);
         }
+
+        if ($user->locked_until && $user->locked_until > now()) {
+            return response()->json([
+                'message' => 'Account is temporarily locked due to multiple failed login attempts.',
+                'locked' => true,
+                'locked_until' => $user->locked_until,
+            ], 403);
+        }
+
+        if (!Hash::check($validated['password'], $user->password)) {
+            $user->increment('failed_login_attempts');
+            
+            if ($user->failed_login_attempts >= 5) {
+                $user->update([
+                    'locked_until' => now()->addMinutes(5),
+                ]);
+                return response()->json([
+                    'message' => 'Account is temporarily locked due to multiple failed login attempts.',
+                    'locked' => true,
+                    'locked_until' => $user->locked_until,
+                ], 403);
+            }
+
+            throw ValidationException::withMessages([
+                'email' => ['Invalid email or password.'],
+            ]);
+        }
+
+        // Reset attempts on successful login
+        $user->update([
+            'failed_login_attempts' => 0,
+            'locked_until' => null,
+        ]);
 
         if ($user->isSuspended()) {
             $reasonText = $user->suspension_reason ? " Reason: {$user->suspension_reason}." : "";
@@ -104,6 +197,122 @@ class AuthController extends Controller
         ]);
     }
 
+    /**
+     * Forgot Password Request
+     */
+    public function forgotPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|string|email',
+        ]);
+
+        $user = User::where('email', $validated['email'])->first();
+
+        // Always return generic response
+        if (!$user) {
+            return response()->json([
+                'message' => 'If an account exists, a password reset email has been sent.',
+            ]);
+        }
+
+        $otp = (string) random_int(100000, 999999);
+        $otpHash = Hash::make($otp);
+
+        EmailOtp::updateOrCreate(
+            ['email' => $validated['email'], 'purpose' => 'forgot_password'],
+            [
+                'otp_hash' => $otpHash,
+                'attempts' => 0,
+                'expires_at' => now()->addMinutes(10),
+            ]
+        );
+
+        MailService::sendOtp($validated['email'], $otp, 'forgot_password');
+
+        return response()->json([
+            'message' => 'If an account exists, a password reset email has been sent.',
+        ]);
+    }
+
+    /**
+     * Verify Forgot Password OTP
+     */
+    public function verifyResetOtp(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|string|email',
+            'otp' => 'required|string|size:6',
+        ]);
+
+        $otpRecord = EmailOtp::where('email', $validated['email'])
+            ->where('purpose', 'forgot_password')
+            ->first();
+
+        if (!$otpRecord || $otpRecord->expires_at < now()) {
+            throw ValidationException::withMessages(['otp' => ['The OTP has expired or is invalid.']]);
+        }
+
+        if ($otpRecord->attempts >= 5) {
+            throw ValidationException::withMessages(['otp' => ['Too many failed attempts. Please request a new OTP.']]);
+        }
+
+        if (!Hash::check($validated['otp'], $otpRecord->otp_hash)) {
+            $otpRecord->increment('attempts');
+            throw ValidationException::withMessages(['otp' => ['The provided OTP is incorrect.']]);
+        }
+
+        // Generate temporary reset token
+        $resetToken = Str::random(60);
+        $otpRecord->update([
+            'otp_hash' => Hash::make($resetToken), // Reuse field to store reset token
+            'expires_at' => now()->addMinutes(30),
+            'purpose' => 'reset_token',
+        ]);
+
+        return response()->json([
+            'message' => 'OTP verified successfully.',
+            'reset_token' => $resetToken,
+        ]);
+    }
+
+    /**
+     * Reset Password
+     */
+    public function resetPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => 'required|string|email',
+            'reset_token' => 'required|string',
+            'password' => 'required|string|min:6|confirmed',
+        ]);
+
+        $otpRecord = EmailOtp::where('email', $validated['email'])
+            ->where('purpose', 'reset_token')
+            ->first();
+
+        if (!$otpRecord || $otpRecord->expires_at < now() || !Hash::check($validated['reset_token'], $otpRecord->otp_hash)) {
+            throw ValidationException::withMessages(['reset_token' => ['The reset session is invalid or has expired.']]);
+        }
+
+        $user = User::where('email', $validated['email'])->first();
+        if ($user) {
+            $user->update([
+                'password' => Hash::make($validated['password']),
+                'failed_login_attempts' => 0,
+                'locked_until' => null,
+            ]);
+            
+            // Revoke all sessions
+            $user->tokens()->delete();
+        }
+
+        $otpRecord->delete(); // Consume reset token
+
+        return response()->json([
+            'message' => 'Password reset successfully. You can now log in.',
+        ]);
+    }
+
     public function profile(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -120,9 +329,9 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
+        // Removed email from updateable fields to prevent email changes
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
-            'email' => ['sometimes', 'required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
             'phone' => 'nullable|string|max:30',
             'avatar' => 'nullable|string',
             'current_password' => 'nullable|string',
@@ -133,21 +342,6 @@ class AuthController extends Controller
         ]);
 
         $currentPassword = $request->input('current_password');
-
-        // Verify current password if user is changing email
-        if (!empty($validated['email']) && strtolower(trim($validated['email'])) !== strtolower(trim($user->email))) {
-            if (empty($currentPassword)) {
-                throw ValidationException::withMessages([
-                    'current_password' => ['Please enter your current password to authorize changing your email address.'],
-                ]);
-            }
-
-            if (!Hash::check($currentPassword, $user->password)) {
-                throw ValidationException::withMessages([
-                    'current_password' => ['The current password you entered is incorrect.'],
-                ]);
-            }
-        }
 
         // Verify current password if user is changing password
         $newPassword = $request->input('password') ?? $request->input('new_password');

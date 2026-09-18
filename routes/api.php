@@ -198,8 +198,12 @@ Route::post('/banners/{id}/click', function (int $id) {
 // ==========================================
 // 2. CUSTOMER AUTHENTICATION
 // ==========================================
-Route::post('/auth/register', [AuthController::class, 'register'])->middleware('sliding-throttle:auth-register');
+Route::post('/auth/register/request', [AuthController::class, 'registerRequest'])->middleware('sliding-throttle:auth-register');
+Route::post('/auth/register/verify', [AuthController::class, 'registerVerify'])->middleware('sliding-throttle:auth-register');
 Route::post('/auth/login', [AuthController::class, 'login'])->middleware('sliding-throttle:auth-customer-login');
+Route::post('/auth/password/forgot', [AuthController::class, 'forgotPassword'])->middleware('sliding-throttle:auth-register');
+Route::post('/auth/password/verify-reset-otp', [AuthController::class, 'verifyResetOtp'])->middleware('sliding-throttle:auth-register');
+Route::post('/auth/password/reset', [AuthController::class, 'resetPassword'])->middleware('sliding-throttle:auth-register');
 
 // Customer Authenticated Routes (Strictly require customer:access token ability)
 Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function () {
@@ -225,6 +229,7 @@ Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function (
 // Protected by named composite rate limiter auth-admin-login
 Route::middleware('sliding-throttle:auth-admin-login')->group(function () {
     Route::post('/admin/auth/login', [AdminAuthController::class, 'login']);
+    Route::post('/admin/auth/activate', [AdminAuthController::class, 'activate']);
 });
 
 // ==========================================
@@ -236,6 +241,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::get('/auth/me', [AdminAuthController::class, 'me']);
     Route::put('/auth/profile', [AdminAuthController::class, 'updateProfile']);
     Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
+    Route::post('/auth/invite', [AdminAuthController::class, 'invite']);
 
     // Executive Overview & Analytics
     Route::get('/analytics', [AdminController::class, 'analytics']);

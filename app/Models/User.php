@@ -30,6 +30,8 @@ class User extends Authenticatable
         'suspension_reason',
         'phone',
         'avatar',
+        'failed_login_attempts',
+        'locked_until',
     ];
 
     protected $hidden = [
@@ -42,6 +44,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'suspended_until' => 'datetime',
+            'locked_until' => 'datetime',
             'password' => 'hashed',
             'permissions' => 'array',
             'risk_reasons' => 'array',

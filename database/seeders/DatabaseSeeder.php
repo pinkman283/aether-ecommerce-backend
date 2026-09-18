@@ -619,6 +619,13 @@ class DatabaseSeeder extends Seeder
         );
 
         // 9. Accounting & Chart of Accounts
-        $this->call(ChartOfAccountsSeeder::class);
+        $this->call([
+            ChartOfAccountsSeeder::class,
+            Phase3IntegrationsAndSettingsSeeder::class,
+            HomepageSectionsSeeder::class,
+            Phase1CmsAndColorsSeeder::class,
+            Phase2BannersSeeder::class,
+            PromotionSeeder::class,
+        ]);
     }
 }

@@ -5,11 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\User;
+use App\Models\AdminInvitation;
+use App\Services\MailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
 
 class AdminAuthController extends Controller
 {
@@ -22,7 +25,7 @@ class AdminAuthController extends Controller
 
         $user = User::where('email', $validated['email'])->first();
 
-        if (!$user || !Hash::check($validated['password'], $user->password)) {
+        if (!$user) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials do not match our records.'],
             ]);
@@ -43,6 +46,41 @@ class AdminAuthController extends Controller
                 'message' => 'Access Denied: You do not have administrative privileges to access this console.',
             ], 403);
         }
+
+        if ($user->locked_until && $user->locked_until > now()) {
+            return response()->json([
+                'message' => 'Administrative account is temporarily locked due to multiple failed login attempts.',
+                'locked' => true,
+                'locked_until' => $user->locked_until,
+            ], 403);
+        }
+
+        if (!Hash::check($validated['password'], $user->password)) {
+            $user->increment('failed_login_attempts');
+            
+            if ($user->failed_login_attempts >= 5) {
+                $user->update([
+                    'locked_until' => now()->addMinutes(15), // 15 mins for admins
+                ]);
+                AuditLog::log(null, 'admin.locked_out', 'User', $user->id, "Admin account locked out after 5 failed attempts.");
+
+                return response()->json([
+                    'message' => 'Administrative account is temporarily locked due to multiple failed login attempts.',
+                    'locked' => true,
+                    'locked_until' => $user->locked_until,
+                ], 403);
+            }
+
+            throw ValidationException::withMessages([
+                'email' => ['The provided credentials do not match our records.'],
+            ]);
+        }
+
+        // Reset attempts on successful login
+        $user->update([
+            'failed_login_attempts' => 0,
+            'locked_until' => null,
+        ]);
 
         if ($user->isSuspended()) {
             AuditLog::log(
@@ -92,6 +130,70 @@ class AdminAuthController extends Controller
         ]);
     }
 
+    public function invite(Request $request): JsonResponse
+    {
+        // Only super admin can invite
+        if (!$request->user() || !$request->user()->isSuperAdmin()) {
+            return response()->json(['message' => 'Only Super Admins can invite new administrators.'], 403);
+        }
+
+        $validated = $request->validate([
+            'email' => 'required|string|email|unique:users',
+            'role' => 'required|string|in:admin,staff',
+        ]);
+
+        $token = Str::random(60);
+
+        AdminInvitation::updateOrCreate(
+            ['email' => $validated['email']],
+            [
+                'role' => $validated['role'],
+                'token' => $token,
+                'expires_at' => now()->addHours(24),
+            ]
+        );
+
+        MailService::sendAdminInvitation($validated['email'], $token, $validated['role']);
+
+        AuditLog::log($request->user(), 'admin.invited', 'User', null, "Super Admin invited {$validated['email']} as {$validated['role']}.");
+
+        return response()->json([
+            'message' => 'Invitation sent successfully.',
+        ]);
+    }
+
+    public function activate(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'token' => 'required|string',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $invitation = AdminInvitation::where('token', $validated['token'])->first();
+
+        if (!$invitation || $invitation->expires_at < now()) {
+            return response()->json(['message' => 'Invitation token is invalid or expired.'], 400);
+        }
+
+        // Create the admin user
+        $user = User::create([
+            'name' => $validated['name'],
+            'email' => $invitation->email,
+            'password' => Hash::make($validated['password']),
+            'role' => $invitation->role,
+            'avatar' => 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
+        ]);
+
+        $invitation->delete();
+
+        AuditLog::log($user, 'admin.activated', 'User', $user->id, "Administrator account activated.");
+
+        return response()->json([
+            'message' => 'Admin account activated successfully. You can now log in.',
+        ]);
+    }
+
     public function me(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -115,9 +217,9 @@ class AdminAuthController extends Controller
         $user = $request->user();
         $oldValues = $user->toArray();
 
+        // Removed email from updateable fields to prevent email changes
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
-            'email' => ['sometimes', 'required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
             'phone' => 'nullable|string|max:30',
             'avatar' => 'nullable|string',
             'current_password' => 'nullable|string',
@@ -128,21 +230,6 @@ class AdminAuthController extends Controller
         ]);
 
         $currentPassword = $request->input('current_password');
-
-        // Verify current password if admin is changing email
-        if (!empty($validated['email']) && strtolower(trim($validated['email'])) !== strtolower(trim($user->email))) {
-            if (empty($currentPassword)) {
-                throw ValidationException::withMessages([
-                    'current_password' => ['Please enter your current administrator password to authorize changing your email address.'],
-                ]);
-            }
-
-            if (!Hash::check($currentPassword, $user->password)) {
-                throw ValidationException::withMessages([
-                    'current_password' => ['The current password you entered is incorrect.'],
-                ]);
-            }
-        }
 
         // Verify current password if admin is changing password
         $newPassword = $request->input('password') ?? $request->input('new_password');
