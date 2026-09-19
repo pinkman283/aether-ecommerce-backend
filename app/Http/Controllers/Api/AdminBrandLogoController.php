@@ -208,6 +208,71 @@ class AdminBrandLogoController extends Controller
     }
 
     /**
+     * Batch update placements across multiple brand logos.
+     */
+    public function batchUpdatePlacements(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'theme.manage', 'settings.manage');
+
+        $validated = $request->validate([
+            'placements' => 'required|array',
+            'placements.*.logo_id' => 'required|integer|exists:brand_logos,id',
+            'placements.*.placements' => 'present|array',
+            'placements.*.placements.*' => 'string|in:' . implode(',', array_keys(self::VALID_PLACEMENTS)),
+        ]);
+
+        DB::transaction(function () use ($validated, $request) {
+            $logoIds = array_column($validated['placements'], 'logo_id');
+
+            // Delete existing placements for all targeted logos
+            BrandLogoPlacement::whereIn('logo_id', $logoIds)->delete();
+
+            $assignedSurfaces = [];
+
+            foreach ($validated['placements'] as $item) {
+                $logoId = $item['logo_id'];
+                $requested = array_unique($item['placements'] ?? []);
+
+                foreach ($requested as $placementKey) {
+                    // Ensure each surface placement belongs to at most one logo mark
+                    if (isset($assignedSurfaces[$placementKey])) {
+                        continue;
+                    }
+                    $assignedSurfaces[$placementKey] = $logoId;
+
+                    // Clear this placement if it was on any other logo
+                    BrandLogoPlacement::where('placement', $placementKey)->delete();
+
+                    BrandLogoPlacement::create([
+                        'logo_id' => $logoId,
+                        'placement' => $placementKey,
+                    ]);
+                }
+            }
+
+            $this->syncLegacySettings();
+            Cache::forget('api_storefront_theme_settings');
+
+            AuditLog::log(
+                $request->user(),
+                'brand_logo.batch_placements_updated',
+                'BrandLogoPlacement',
+                null,
+                "Updated brand logo placements in batch across " . count($logoIds) . " logos.",
+                null,
+                $validated['placements']
+            );
+        });
+
+        $logos = BrandLogo::with('placements')->orderBy('id', 'asc')->get();
+
+        return response()->json([
+            'message' => 'Brand logo placements saved successfully.',
+            'logos' => $logos,
+        ]);
+    }
+
+    /**
      * Delete a brand logo.
      */
     public function destroy(Request $request, int $id): JsonResponse

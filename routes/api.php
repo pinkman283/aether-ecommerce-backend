@@ -528,6 +528,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::prefix('branding')->group(function () {
         Route::get('/logos', [AdminBrandLogoController::class, 'index']);
         Route::post('/logos', [AdminBrandLogoController::class, 'store']);
+        Route::put('/placements', [AdminBrandLogoController::class, 'batchUpdatePlacements']);
         Route::put('/logos/{id}', [AdminBrandLogoController::class, 'update']);
         Route::delete('/logos/{id}', [AdminBrandLogoController::class, 'destroy']);
         Route::post('/upload', [AdminBrandLogoController::class, 'upload']);
