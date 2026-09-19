@@ -7,6 +7,7 @@ use App\Models\AuditLog;
 use App\Models\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -296,6 +297,8 @@ class AdminThemeController extends Controller
         }
         $currentSettings['deleted_theme_ids'] = $deletedThemeIds;
 
+        Cache::forget('api_storefront_theme_settings');
+
         return response()->json([
             'message' => 'Storefront theme and UI settings updated successfully.',
             'settings' => $currentSettings,
@@ -315,6 +318,8 @@ class AdminThemeController extends Controller
             $type = is_bool($defaultVal) ? 'boolean' : (is_numeric($defaultVal) ? 'number' : 'string');
             Setting::set($key, $defaultVal, 'theme', $type, ucwords(str_replace('_', ' ', $key)));
         }
+
+        Cache::forget('api_storefront_theme_settings');
 
         AuditLog::log(
             $request->user(),
