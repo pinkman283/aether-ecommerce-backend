@@ -70,6 +70,16 @@ class ShippingZoneResolver
             throw new InvalidArgumentException('Shipping destination city is required.');
         }
 
+        // 0. Check Explicit Outside Dhaka keywords before Dhaka Metro (so 'Outside Dhaka' does not trigger 'dhaka')
+        if (
+            str_contains($city, 'outside dhaka') ||
+            str_contains($city, 'outside_dhaka') ||
+            str_contains($combined, 'outside dhaka') ||
+            str_contains($combined, 'outside_dhaka')
+        ) {
+            return 'outside_dhaka';
+        }
+
         // 1. Check Suburbs first (so Gazipur/Savar inside "Dhaka District" resolves correctly to suburbs if present)
         foreach (self::$dhakaSuburbsKeywords as $keyword) {
             if (self::containsWord($city, $keyword) || self::containsWord($combined, $keyword)) {

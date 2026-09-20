@@ -61,13 +61,11 @@ class AccountingService
                 $coaId = $line['chart_of_account_id'] ?? null;
                 if (!$coaId && !empty($line['account_code'])) {
                     $code = $line['account_code'];
-                    if (!isset($coaCache[$code])) {
-                        $coa = ChartOfAccount::where('account_code', $code)->first();
+                        $coa = self::resolveChartOfAccount($code);
                         if (!$coa) {
                             throw new InvalidArgumentException("Chart of Account with code [{$code}] not found.");
                         }
                         $coaCache[$code] = $coa->id;
-                    }
                     $coaId = $coaCache[$code];
                 }
 
@@ -1111,6 +1109,70 @@ class AccountingService
             $computedBalance = round((float) $bank->opening_balance + ($debit - $credit), 2);
             $bank->update(['current_balance' => $computedBalance]);
         }
+    }
+
+    /**
+     * Resolve ChartOfAccount by account code with resilient auto-healing.
+     */
+    public static function resolveChartOfAccount(string $code): ?ChartOfAccount
+    {
+        $coa = ChartOfAccount::where('account_code', $code)->first();
+        if ($coa) {
+            return $coa;
+        }
+
+        // 1. Attempt running the seeder to populate system accounts
+        try {
+            if (class_exists(\Database\Seeders\ChartOfAccountsSeeder::class)) {
+                (new \Database\Seeders\ChartOfAccountsSeeder())->run();
+                $coa = ChartOfAccount::where('account_code', $code)->first();
+                if ($coa) {
+                    return $coa;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Silently continue to fallback dictionary
+        }
+
+        // 2. Direct fallback definition map for core system accounts
+        $coreSystemAccounts = [
+            '1010' => ['account_name' => 'Cash on Hand', 'account_type' => 'asset', 'is_system' => true],
+            '1020' => ['account_name' => 'Main Business Bank Account', 'account_type' => 'asset', 'is_system' => true],
+            '1030' => ['account_name' => 'Digital Wallets & MFS', 'account_type' => 'asset', 'is_system' => true],
+            '1100' => ['account_name' => 'Accounts Receivable (A/R)', 'account_type' => 'asset', 'is_system' => true],
+            '1200' => ['account_name' => 'Merchandise Inventory', 'account_type' => 'asset', 'is_system' => true],
+            '1500' => ['account_name' => 'Equipment & Fixed Assets', 'account_type' => 'asset', 'is_system' => false],
+            '2010' => ['account_name' => 'Accounts Payable (A/P)', 'account_type' => 'liability', 'is_system' => true],
+            '2020' => ['account_name' => 'Customer Advances & Store Credit', 'account_type' => 'liability', 'is_system' => true],
+            '2030' => ['account_name' => 'Sales Tax / VAT Payable', 'account_type' => 'liability', 'is_system' => true],
+            '3010' => ['account_name' => "Owner's Capital", 'account_type' => 'equity', 'is_system' => true],
+            '3020' => ['account_name' => 'Retained Earnings', 'account_type' => 'equity', 'is_system' => true],
+            '4010' => ['account_name' => 'Online Sales Revenue', 'account_type' => 'revenue', 'is_system' => true],
+            '4020' => ['account_name' => 'POS & In-Store Sales Revenue', 'account_type' => 'revenue', 'is_system' => true],
+            '4030' => ['account_name' => 'Shipping & Delivery Income', 'account_type' => 'revenue', 'is_system' => true],
+            '4090' => ['account_name' => 'Sales Discounts & Promotions', 'account_type' => 'revenue', 'is_system' => true],
+            '4095' => ['account_name' => 'Sales Returns & Refunds', 'account_type' => 'revenue', 'is_system' => true],
+            '5010' => ['account_name' => 'Cost of Goods Sold - Online', 'account_type' => 'cogs', 'is_system' => true],
+            '5020' => ['account_name' => 'Cost of Goods Sold - POS', 'account_type' => 'cogs', 'is_system' => true],
+            '5030' => ['account_name' => 'Inventory Shrinkage & Loss', 'account_type' => 'cogs', 'is_system' => false],
+            '6040' => ['account_name' => 'Courier & Logistics Expense', 'account_type' => 'expense', 'is_system' => false],
+            '6070' => ['account_name' => 'Payment Gateway & Banking Fees', 'account_type' => 'expense', 'is_system' => false],
+        ];
+
+        if (isset($coreSystemAccounts[$code])) {
+            $data = $coreSystemAccounts[$code];
+            return ChartOfAccount::firstOrCreate(
+                ['account_code' => $code],
+                [
+                    'account_name' => $data['account_name'],
+                    'account_type' => $data['account_type'],
+                    'is_system' => $data['is_system'] ?? true,
+                    'is_active' => true,
+                ]
+            );
+        }
+
+        return null;
     }
 }
 

@@ -36,7 +36,7 @@ class PromotionEngine
         ?string $customerEmail = null,
         ?string $code = null,
         ?int $claimedCouponId = null,
-        float $baseShippingRate = 15.00,
+        float $baseShippingRate = 0.00,
         string $paymentMethod = 'cash_on_delivery'
     ): array {
         if (empty($cartItems)) {

@@ -32,13 +32,35 @@ class PromotionController extends Controller
             'code' => 'nullable|string',
             'claimed_coupon_id' => 'nullable|integer',
             'shipping_rate' => 'nullable|numeric|min:0',
+            'shipping_method' => 'nullable|string',
             'payment_method' => 'nullable|string',
             'customer_email' => 'nullable|email',
         ]);
 
         $user = $request->user('sanctum');
         $customerEmail = $validated['customer_email'] ?? $user?->email;
-        $baseShippingRate = (float) ($validated['shipping_rate'] ?? 15.00);
+
+        // Dynamic resolution of shipping rate:
+        // If explicitly supplied (including 0), use it.
+        // If omitted but shipping_method provided, calculate from shipping zones.
+        // Otherwise default to 0.00 (no delivery charge until zone selected).
+        if (isset($validated['shipping_rate'])) {
+            $baseShippingRate = (float) $validated['shipping_rate'];
+        } elseif (!empty($validated['shipping_method'])) {
+            $approxSubtotal = 0.00;
+            $productIds = array_column($validated['items'], 'product_id');
+            $products = \App\Models\Product::whereIn('id', $productIds)->get()->keyBy('id');
+            foreach ($validated['items'] as $it) {
+                $p = $products->get($it['product_id']);
+                if ($p) {
+                    $approxSubtotal += (float) $p->price * (int) $it['quantity'];
+                }
+            }
+            $baseShippingRate = OrderController::calculateAuthoritativeShippingRate($validated['shipping_method'], $approxSubtotal);
+        } else {
+            $baseShippingRate = 0.00;
+        }
+
         $paymentMethod = $validated['payment_method'] ?? 'cash_on_delivery';
 
         $result = PromotionEngine::evaluateCart(

@@ -76,6 +76,7 @@ class OrderCheckoutTest extends TestCase
                 'country' => 'Bangladesh',
             ],
             'payment_method' => 'cash_on_delivery',
+            'shipping_method' => 'inside_dhaka',
             'items' => [
                 ['product_id' => $product->id, 'variant_id' => $variant->id, 'quantity' => 2],
             ],

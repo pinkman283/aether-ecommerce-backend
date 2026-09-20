@@ -127,7 +127,7 @@ class OrderController extends Controller
                 'shipping_zone_id' => 'nullable|integer',
                 'shipping_area_id' => 'nullable|integer',
                 'payment_method' => 'required|in:cash_on_delivery,cod',
-                'shipping_method' => 'nullable|string|max:100',
+                'shipping_method' => 'required|string|max:100',
                 'coupon_code' => 'nullable|string',
                 'claimed_coupon_id' => 'nullable|integer',
                 'use_store_credit' => 'nullable|boolean',
@@ -136,6 +136,8 @@ class OrderController extends Controller
                 'items.*.product_id' => 'required|exists:products,id',
                 'items.*.variant_id' => 'nullable|exists:product_variants,id',
                 'items.*.quantity' => 'required|integer|min:1',
+            ], [
+                'shipping_method.required' => 'Please select a delivery area.',
             ]);
 
             // Ensure address defaults
