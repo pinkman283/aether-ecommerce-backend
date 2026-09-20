@@ -316,12 +316,12 @@ class AuthController extends Controller
     public function profile(Request $request): JsonResponse
     {
         $user = $request->user();
-        $user->load(['addresses', 'orders' => fn($q) => $q->latest()->take(5)->with('items')]);
+        $user->load(['addresses', 'orders' => fn($q) => $q->latest()->with('items')]);
 
         return response()->json([
             'user' => $user,
-            'total_orders' => $user->orders()->count(),
-            'total_spent' => $user->orders()->where('payment_status', 'paid')->sum('total_amount'),
+            'total_orders' => (int) $user->orders()->count(),
+            'total_spent' => (float) $user->orders()->where('payment_status', 'paid')->sum('total_amount'),
         ]);
     }
 

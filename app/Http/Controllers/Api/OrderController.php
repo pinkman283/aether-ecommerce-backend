@@ -25,12 +25,16 @@ class OrderController extends Controller
         $user = $request->user();
         
         // Strictly scoped to authenticated customer orders
-        $orders = Order::where('user_id', $user->id)
+        $query = Order::where('user_id', $user->id)
             ->with('items')
-            ->latest()
-            ->paginate(10);
+            ->latest();
 
-        return response()->json($orders);
+        if ($request->boolean('all')) {
+            return response()->json(['data' => $query->get()]);
+        }
+
+        $perPage = $request->integer('per_page', 50);
+        return response()->json($query->paginate($perPage));
     }
 
     public function show(Request $request, string $orderNumber): JsonResponse
