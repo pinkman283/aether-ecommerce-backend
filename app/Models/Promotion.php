@@ -63,6 +63,11 @@ class Promotion extends Model
         'created_by_user_id',
     ];
 
+    protected $appends = [
+        'primary_code',
+        'formatted_discount',
+    ];
+
     protected function casts(): array
     {
         return [
@@ -240,6 +245,45 @@ class Promotion extends Model
         }
 
         return 'SPECIAL OFFER';
+    }
+
+    /**
+     * Clear all promotional storefront caches immediately on promotion lifecycle changes.
+     */
+    public static function clearStorefrontCache(?string $slug = null): void
+    {
+        \Illuminate\Support\Facades\Cache::forget('storefront_homepage_banners');
+
+        $placements = [
+            'all',
+            'primary_hero',
+            'secondary_hero',
+            'top_strip',
+            'bottom_banner',
+            'middle_promo',
+            'hero_carousel',
+            'voucher_carousel',
+            'flash_sale',
+            'product_grid_banner',
+        ];
+        foreach ($placements as $placement) {
+            \Illuminate\Support\Facades\Cache::forget("storefront_promotions_{$placement}");
+        }
+
+        if ($slug) {
+            \Illuminate\Support\Facades\Cache::forget("campaign_details_{$slug}");
+        }
+    }
+
+    protected static function booted(): void
+    {
+        static::saved(function ($promo) {
+            static::clearStorefrontCache($promo->slug);
+        });
+
+        static::deleted(function ($promo) {
+            static::clearStorefrontCache($promo->slug);
+        });
     }
 }
 

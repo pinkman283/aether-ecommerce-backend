@@ -124,6 +124,33 @@ class PromotionEngine
                 continue;
             }
 
+            // Per-customer limit check for automatic promotions
+            if ($autoPromo->per_customer_usage_limit !== null) {
+                $alreadyRedeemed = 0;
+                $normalizedEmail = $customerEmail ? self::normalizeEmail($customerEmail) : null;
+                if ($user) {
+                    $alreadyRedeemed = PromotionRedemption::where('promotion_id', $autoPromo->id)
+                        ->where(function ($q) use ($user, $normalizedEmail) {
+                            $q->where('user_id', $user->id);
+                            if ($normalizedEmail) {
+                                $q->orWhere('customer_email', $normalizedEmail)
+                                  ->orWhere('customer_email', $user->email);
+                            }
+                        })
+                        ->where('status', 'completed')
+                        ->count();
+                } elseif ($normalizedEmail) {
+                    $alreadyRedeemed = PromotionRedemption::where('promotion_id', $autoPromo->id)
+                        ->where('customer_email', $normalizedEmail)
+                        ->where('status', 'completed')
+                        ->count();
+                }
+
+                if ($alreadyRedeemed >= $autoPromo->per_customer_usage_limit) {
+                    continue;
+                }
+            }
+
             $eval = self::evaluateSinglePromotion($autoPromo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate, $customerPhone);
             if ($eval['eligible'] && $eval['discount_amount'] > 0) {
                 $appliedPromotions[] = [
@@ -786,9 +813,43 @@ class PromotionEngine
                 continue;
             }
 
-            // Atomic usage limit check inside the lock
+            // Atomic total usage limit check inside the lock
             if ($promo->total_usage_limit !== null && $promo->total_used_count >= $promo->total_usage_limit) {
+                if ($promo->promotion_type === 'automatic_discount') {
+                    continue;
+                }
                 throw new InvalidArgumentException("Promotion '{$promo->name}' has reached its total redemption limit.");
+            }
+
+            // Atomic per-customer usage limit check inside the lock
+            if ($promo->per_customer_usage_limit !== null) {
+                $userRedeemedCount = 0;
+                if ($user) {
+                    $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
+                        ->where(function ($q) use ($user, $customerEmail) {
+                            $q->where('user_id', $user->id);
+                            $norm = self::normalizeEmail($customerEmail);
+                            if ($norm) {
+                                $q->orWhere('customer_email', $norm)
+                                  ->orWhere('customer_email', $user->email);
+                            }
+                        })
+                        ->where('status', 'completed')
+                        ->count();
+                } elseif (!empty($customerEmail)) {
+                    $norm = self::normalizeEmail($customerEmail);
+                    $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
+                        ->where('customer_email', $norm)
+                        ->where('status', 'completed')
+                        ->count();
+                }
+
+                if ($userRedeemedCount >= $promo->per_customer_usage_limit) {
+                    if ($promo->promotion_type === 'automatic_discount') {
+                        continue;
+                    }
+                    throw new InvalidArgumentException("You have reached the maximum allowed redemptions ({$promo->per_customer_usage_limit}) for promotion '{$promo->name}'.");
+                }
             }
 
             $promo->increment('total_used_count');
@@ -797,8 +858,27 @@ class PromotionEngine
             if (!empty($applied['code'])) {
                 $codeObj = PromotionCode::where('code', $applied['code'])->lockForUpdate()->first();
                 if ($codeObj) {
-                    if ($codeObj->usage_limit !== null && $codeObj->used_count >= $codeObj->usage_limit) {
+                    $maxUses = $codeObj->max_uses ?? $codeObj->usage_limit ?? null;
+                    if ($maxUses !== null && $codeObj->used_count >= $maxUses) {
                         throw new InvalidArgumentException("Promo code '{$codeObj->code}' has reached its usage limit.");
+                    }
+                    $maxPerCust = $codeObj->max_uses_per_customer ?? null;
+                    if ($maxPerCust !== null) {
+                        $codeCustCount = 0;
+                        if ($user) {
+                            $codeCustCount = PromotionRedemption::where('promotion_code_id', $codeObj->id)
+                                ->where('user_id', $user->id)
+                                ->where('status', 'completed')
+                                ->count();
+                        } elseif (!empty($customerEmail)) {
+                            $codeCustCount = PromotionRedemption::where('promotion_code_id', $codeObj->id)
+                                ->where('customer_email', self::normalizeEmail($customerEmail))
+                                ->where('status', 'completed')
+                                ->count();
+                        }
+                        if ($codeCustCount >= $maxPerCust) {
+                            throw new InvalidArgumentException("You have reached the redemption limit for promo code '{$codeObj->code}'.");
+                        }
                     }
                     $codeObj->increment('used_count');
                     $codeId = $codeObj->id;

@@ -40,6 +40,7 @@ class PromotionRemediationTest extends TestCase
             'slug' => 'test-product-' . Str::random(6),
             'sku' => 'TEST-001',
             'price' => 500.00,
+            'cost_price' => 300.00,
             'stock_quantity' => 10,
             'is_active' => true,
         ]);

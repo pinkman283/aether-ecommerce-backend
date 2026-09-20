@@ -13,7 +13,8 @@ use Illuminate\Support\Str;
 class AdminBannerController extends Controller
 {
     protected array $relations = [
-        'promotion:id,name,slug,discount_type,discount_value,badge_text',
+        'promotion:id,name,slug,discount_type,discount_value,badge_text,starts_at,expires_at,status',
+        'promotion.codes:id,promotion_id,code,is_active',
         'product:id,name,slug,price',
         'category:id,name,slug',
         'brand:id,name,slug',
@@ -108,8 +109,18 @@ class AdminBannerController extends Controller
             'sort_order' => 'integer',
             'is_active' => 'boolean',
             'starts_at' => 'nullable|date',
-            'expires_at' => 'nullable|date',
         ]);
+
+        // Backend Enforcement: If banner is linked to a promotion, enforce authoritative promotion fields
+        if (!empty($validated['promotion_id'])) {
+            $linkedPromo = \App\Models\Promotion::findOrFail($validated['promotion_id']);
+            $validated['destination_type'] = 'promotion';
+            $validated['destination_id'] = null;
+            $validated['cta_link'] = '/promotions/' . $linkedPromo->slug;
+            $validated['discount_tag'] = $linkedPromo->formatted_discount ?: ($linkedPromo->primary_code ? "CODE: {$linkedPromo->primary_code}" : null);
+            $validated['starts_at'] = $linkedPromo->starts_at;
+            $validated['expires_at'] = $linkedPromo->expires_at;
+        }
 
         $banner = Banner::create([
             'title' => $validated['title'],
@@ -182,6 +193,18 @@ class AdminBannerController extends Controller
 
         if (array_key_exists('image_url', $validated) && is_null($validated['image_url'])) {
             $validated['image_url'] = '';
+        }
+
+        // Backend Enforcement: If banner is linked to a promotion, enforce authoritative promotion fields
+        $targetPromoId = array_key_exists('promotion_id', $validated) ? $validated['promotion_id'] : $banner->promotion_id;
+        if (!empty($targetPromoId)) {
+            $linkedPromo = \App\Models\Promotion::findOrFail($targetPromoId);
+            $validated['destination_type'] = 'promotion';
+            $validated['destination_id'] = null;
+            $validated['cta_link'] = '/promotions/' . $linkedPromo->slug;
+            $validated['discount_tag'] = $linkedPromo->formatted_discount ?: ($linkedPromo->primary_code ? "CODE: {$linkedPromo->primary_code}" : null);
+            $validated['starts_at'] = $linkedPromo->starts_at;
+            $validated['expires_at'] = $linkedPromo->expires_at;
         }
 
         $banner->update($validated);

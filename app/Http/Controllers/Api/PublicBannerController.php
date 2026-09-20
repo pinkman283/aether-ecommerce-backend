@@ -29,7 +29,24 @@ class PublicBannerController extends Controller
                 ->with($relations)
                 ->orderBy('sort_order', 'asc')
                 ->orderBy('id', 'asc')
-                ->get();
+                ->get()
+                ->map(function ($banner) {
+                    if ($banner->promotion_id && $banner->promotion) {
+                        $p = $banner->promotion;
+                        $promoCode = $p->primary_code;
+                        // Authoritative synchronization from promotion
+                        $banner->computed_link = '/promotions/' . $p->slug;
+                        $banner->cta_link = '/promotions/' . $p->slug;
+                        if (!$banner->eyebrow) {
+                            $banner->eyebrow = $p->badge_text ?: $p->formatted_discount;
+                        }
+                        if (!$banner->badge) {
+                            $banner->badge = $p->badge_text ?: $p->formatted_discount;
+                        }
+                        $banner->discount_tag = $promoCode ? "CODE: {$promoCode}" : $p->formatted_discount;
+                    }
+                    return $banner;
+                });
 
             // 2. Retrieve active promotions configured for storefront presentation
             $storefrontPromos = \App\Models\Promotion::storefrontVisible()
@@ -75,8 +92,28 @@ class PublicBannerController extends Controller
                     ];
                 });
 
-            // Merge promotions into banners
-            $allBanners = $banners->concat($storefrontPromos);
+            // Deduplicate: If an explicit Banner already links to a promotion_id on a placement,
+            // that explicit Banner takes precedence, preventing duplicate display of the same promotion.
+            $existingPromoIdsByPlacement = [];
+            foreach ($banners as $b) {
+                if ($b->promotion_id) {
+                    $normPlacement = in_array($b->placement, ['primary_hero', 'hero_slider']) ? 'primary_hero' :
+                        (in_array($b->placement, ['bottom_banner', 'middle_promo', 'discount_carousel']) ? 'bottom_banner' :
+                        (in_array($b->placement, ['top_strip', 'top_announcement']) ? 'top_strip' : $b->placement));
+                    $existingPromoIdsByPlacement[$normPlacement . '_' . $b->promotion_id] = true;
+                }
+            }
+
+            // Exclude auto-generated storefront promotions if an explicit banner already represents that promotion on that placement
+            $filteredStorefrontPromos = $storefrontPromos->reject(function ($p) use ($existingPromoIdsByPlacement) {
+                $normPlacement = in_array($p['placement'], ['primary_hero', 'hero_slider', 'hero_carousel']) ? 'primary_hero' :
+                    (in_array($p['placement'], ['bottom_banner', 'middle_promo', 'discount_carousel', 'voucher_carousel']) ? 'bottom_banner' :
+                    (in_array($p['placement'], ['top_strip', 'top_announcement']) ? 'top_strip' : $p['placement']));
+                return isset($existingPromoIdsByPlacement[$normPlacement . '_' . $p['promotion_id']]);
+            });
+
+            // Merge deduplicated promotions into banners
+            $allBanners = $banners->concat($filteredStorefrontPromos);
 
             // Segment by placement
             $primaryBanners = $allBanners->filter(function ($b) {

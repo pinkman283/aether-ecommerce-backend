@@ -50,4 +50,15 @@ class PromotionCode extends Model
 
         return true;
     }
+
+    protected static function booted(): void
+    {
+        static::saved(function ($code) {
+            \App\Models\Promotion::clearStorefrontCache($code->promotion?->slug);
+        });
+
+        static::deleted(function ($code) {
+            \App\Models\Promotion::clearStorefrontCache($code->promotion?->slug);
+        });
+    }
 }

@@ -128,8 +128,7 @@ class InventoryCostingService
                             : ($product->cost_price !== null && (float)$product->cost_price > 0 ? (float)$product->cost_price : null);
 
                         if ($baseCost === null) {
-                            // Resilient fallback: estimate standard COGS basis at 60% of item unit price
-                            $baseCost = round((float) ($item->unit_price ?? $product->price ?? 0) * 0.60, 2);
+                            throw new \RuntimeException("Fulfillment halted for product '{$product->name}' with no valid FIFO cost layer or documented cost price.");
                         }
 
                         $itemCogs += ($remainingQty * $baseCost);

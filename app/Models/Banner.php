@@ -36,6 +36,7 @@ class Banner extends Model
     protected $appends = [
         'computed_link',
         'is_currently_visible',
+        'banner_type',
     ];
 
     protected function casts(): array
@@ -72,11 +73,20 @@ class Banner extends Model
         return $this->belongsTo(Brand::class, 'destination_id');
     }
 
+    public function getBannerTypeAttribute(): string
+    {
+        return $this->promotion_id ? 'promotional' : 'content';
+    }
+
     /**
      * Compute authoritative frontend destination URL based on destination_type.
      */
     public function getComputedLinkAttribute(): string
     {
+        if ($this->promotion_id && $this->promotion) {
+            return '/promotions/' . $this->promotion->slug;
+        }
+
         if ($this->destination_type === 'product' && $this->product) {
             return '/products/' . $this->product->slug;
         }
@@ -156,5 +166,16 @@ class Banner extends Model
                         $pq->activeSchedule();
                     });
             });
+    }
+
+    protected static function booted(): void
+    {
+        static::saved(function ($banner) {
+            \App\Models\Promotion::clearStorefrontCache($banner->promotion?->slug);
+        });
+
+        static::deleted(function ($banner) {
+            \App\Models\Promotion::clearStorefrontCache($banner->promotion?->slug);
+        });
     }
 }
