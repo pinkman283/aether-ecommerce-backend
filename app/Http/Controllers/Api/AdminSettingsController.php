@@ -78,9 +78,30 @@ class AdminSettingsController extends Controller
             $currentSplitTitle = Setting::get('split_reveal_title', 'AETHER');
             $oldBrandName = $oldValues['store_name'] ?? 'AETHER';
             if ($currentSplitTitle === 'AETHER' || $currentSplitTitle === $oldBrandName) {
-                Setting::set('split_reveal_title', $brand, 'theme', 'string', 'Split Reveal Title');
+                Setting::set('split_reveal_title', $brand, 'theme', 'Split Reveal Title');
             }
         }
+
+        // Synchronize shipping rates with shipping_zones
+        if (isset($newValues['standard_shipping_rate']) || isset($newValues['priority_shipping_rate'])) {
+            $zones = \App\Services\ShippingZoneResolver::getConfiguredZones();
+            $changed = false;
+            foreach ($zones as &$zone) {
+                if ($zone['id'] === 'inside_dhaka' && isset($newValues['standard_shipping_rate'])) {
+                    $zone['rate'] = (float) $newValues['standard_shipping_rate'];
+                    $changed = true;
+                }
+                if ($zone['id'] === 'outside_dhaka' && isset($newValues['priority_shipping_rate'])) {
+                    $zone['rate'] = (float) $newValues['priority_shipping_rate'];
+                    $changed = true;
+                }
+            }
+            if ($changed) {
+                Setting::set('shipping_zones', json_encode($zones));
+            }
+        }
+
+        \Illuminate\Support\Facades\Cache::forget('api_storefront_theme_settings');
 
         AuditLog::log(
             $request->user(),
@@ -175,6 +196,18 @@ class AdminSettingsController extends Controller
             $setting->id,
             "Updated configuration for group: {$group}"
         );
+
+        if ($group === 'shipping_zones' && is_array($data)) {
+            foreach ($data as $z) {
+                if (($z['id'] ?? '') === 'inside_dhaka' && isset($z['rate'])) {
+                    Setting::set('standard_shipping_rate', (string) $z['rate']);
+                }
+                if (($z['id'] ?? '') === 'outside_dhaka' && isset($z['rate'])) {
+                    Setting::set('priority_shipping_rate', (string) $z['rate']);
+                }
+            }
+            \Illuminate\Support\Facades\Cache::forget('api_storefront_theme_settings');
+        }
 
         return response()->json([
             'message' => "Settings for '{$group}' saved successfully.",

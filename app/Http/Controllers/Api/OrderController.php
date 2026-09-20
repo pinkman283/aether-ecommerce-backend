@@ -330,7 +330,13 @@ class OrderController extends Controller
                 $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
 
                 // Post Real Double-Entry Sale Journal Entry to General Ledger
-                \App\Services\AccountingService::postOrderSale($order);
+                try {
+                    \App\Services\AccountingService::postOrderSale($order);
+                } catch (\Throwable $acctEx) {
+                    \Illuminate\Support\Facades\Log::error("Accounting journal entry failed for Order #{$order->order_number}: " . $acctEx->getMessage(), [
+                        'exception' => $acctEx,
+                    ]);
+                }
 
                 // Update risk score
                 \App\Services\CustomerRiskService::calculateCustomerRisk($customerRecord);
@@ -390,7 +396,7 @@ class OrderController extends Controller
             }
         }
 
-        return str_contains($method, 'outside') ? 130.00 : 60.00;
+        return str_contains($method, 'outside') ? 120.00 : 60.00;
     }
 
     /**

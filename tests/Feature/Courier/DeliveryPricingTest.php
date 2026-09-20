@@ -118,8 +118,8 @@ class DeliveryPricingTest extends TestCase
         $this->createdOrder = Order::find($orderData['id']);
 
         $this->assertNotNull($this->createdOrder);
-        // Outside dhaka authoritative rate is 130
-        $this->assertEquals(130.0, (float) $this->createdOrder->shipping_amount);
-        $this->assertEquals(630.0 + (float) $this->createdOrder->tax_amount, (float) $this->createdOrder->total_amount);
+        // Outside dhaka authoritative rate is 120
+        $this->assertEquals(120.0, (float) $this->createdOrder->shipping_amount);
+        $this->assertEquals(620.0 + (float) $this->createdOrder->tax_amount, (float) $this->createdOrder->total_amount);
     }
 }

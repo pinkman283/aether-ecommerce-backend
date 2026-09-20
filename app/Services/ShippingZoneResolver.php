@@ -136,7 +136,7 @@ class ShippingZoneResolver
             $zones = [
                 ['id' => 'inside_dhaka', 'name' => 'Inside Dhaka Metro', 'rate' => 60, 'duration' => '24-48 Hours', 'free_threshold' => 3000, 'is_active' => true],
                 ['id' => 'dhaka_suburbs', 'name' => 'Dhaka Suburbs (Gazipur, Savar, Narayanganj)', 'rate' => 100, 'duration' => '48-72 Hours', 'free_threshold' => 5000, 'is_active' => true],
-                ['id' => 'outside_dhaka', 'name' => 'Outside Dhaka (Nationwide)', 'rate' => 130, 'duration' => '3-5 Business Days', 'free_threshold' => 6000, 'is_active' => true],
+                ['id' => 'outside_dhaka', 'name' => 'Outside Dhaka (Nationwide)', 'rate' => 120, 'duration' => '3-5 Business Days', 'free_threshold' => 6000, 'is_active' => true],
                 ['id' => 'express_sameday', 'name' => 'Express Same-Day Dispatch', 'rate' => 200, 'duration' => 'Same Day (Before 2 PM)', 'free_threshold' => 0, 'is_active' => true],
             ];
             Setting::set('shipping_zones', json_encode($zones));
@@ -198,7 +198,7 @@ class ShippingZoneResolver
         }
 
         $zoneConfig = $zoneMap[$effectiveMethod] ?? ($zoneMap[$resolvedZone] ?? null);
-        $baseRate = (float) ($zoneConfig['rate'] ?? ($resolvedZone === 'outside_dhaka' ? 130.00 : 60.00));
+        $baseRate = (float) ($zoneConfig['rate'] ?? ($resolvedZone === 'outside_dhaka' ? 120.00 : 60.00));
         $threshold = (float) ($zoneConfig['free_threshold'] ?? ($resolvedZone === 'outside_dhaka' ? 6000.00 : 3000.00));
 
         $isFree = ($threshold > 0 && $subtotal >= $threshold);

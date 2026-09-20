@@ -105,7 +105,7 @@ class CheckoutIntegrityTest extends TestCase
 
         $response->assertStatus(201);
         $order = $response->json('order');
-        $this->assertEquals(130.00, (float) $order['shipping_amount']);
+        $this->assertEquals(120.00, (float) $order['shipping_amount']);
         $this->assertEquals('outside_dhaka', $order['shipping_method']);
     }
 
