@@ -179,6 +179,18 @@ class AccountingService
         $discount = round((float) $order->discount_amount, 2);
         $storeCredit = round((float) ($order->store_credit_amount ?? 0), 2);
 
+        $shippingDiscount = 0.00;
+        if (!empty($order->promotion_discount_details) && is_array($order->promotion_discount_details)) {
+            foreach ($order->promotion_discount_details as $pdd) {
+                if (($pdd['discount_type'] ?? '') === 'free_shipping') {
+                    $shippingDiscount += (float) ($pdd['discount_amount'] ?? 0.00);
+                }
+            }
+        }
+        $shippingDiscount = round($shippingDiscount, 2);
+        $totalDiscountAmount = round($discount + $shippingDiscount, 2);
+        $grossShipping = round($shipping + $shippingDiscount, 2);
+
         // Determine payment account code
         $paymentAccountCode = '1100'; // Accounts Receivable by default
         if ($isPaid) {
@@ -217,16 +229,16 @@ class AccountingService
         }
 
         // 3. Debit Discount (Account 4090: Sales Discounts & Promotions)
-        if ($discount > 0) {
+        if ($totalDiscountAmount > 0) {
             $lines[] = [
                 'account_code' => '4090', // Sales Discounts & Promotions
-                'debit' => $discount,
+                'debit' => $totalDiscountAmount,
                 'credit' => 0.00,
-                'memo' => "Promotional discount on Order #{$order->order_number}",
+                'memo' => "Promotional discount on Order #{$order->order_number}" . ($shippingDiscount > 0 ? " (includes ৳{$shippingDiscount} free shipping)" : ""),
             ];
         }
 
-        // 3. Credit Revenue (Subtotal)
+        // 4. Credit Revenue (Subtotal)
         if ($subtotal > 0) {
             $lines[] = [
                 'account_code' => $revenueAccountCode,
@@ -236,13 +248,13 @@ class AccountingService
             ];
         }
 
-        // 4. Credit Shipping Income (if any)
-        if ($shipping > 0) {
+        // 5. Credit Shipping Income (Gross shipping revenue before free shipping promo)
+        if ($grossShipping > 0) {
             $lines[] = [
                 'account_code' => '4030', // Shipping & Delivery Income
                 'debit' => 0.00,
-                'credit' => $shipping,
-                'memo' => "Shipping fee collected on Order #{$order->order_number}",
+                'credit' => $grossShipping,
+                'memo' => "Shipping income for Order #{$order->order_number}" . ($shippingDiscount > 0 ? " (gross before free shipping promo)" : ""),
             ];
         }
 

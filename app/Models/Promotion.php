@@ -53,6 +53,13 @@ class Promotion extends Model
         'cta_text',
         'cta_destination',
         'is_featured',
+        'show_on_storefront',
+        'storefront_placement',
+        'headline',
+        'subheadline',
+        'image_alt_text',
+        'mobile_banner_image',
+        'terms_conditions',
         'created_by_user_id',
     ];
 
@@ -86,6 +93,7 @@ class Promotion extends Model
             'can_combine_with_product_discounts' => 'boolean',
             'priority' => 'integer',
             'is_featured' => 'boolean',
+            'show_on_storefront' => 'boolean',
         ];
     }
 
@@ -168,4 +176,70 @@ class Promotion extends Model
 
         return true;
     }
+
+    /**
+     * Scope for promotions with active status and valid schedule window.
+     */
+    public function scopeActiveSchedule($query)
+    {
+        $now = now();
+        return $query->where('status', 'active')
+            ->where(function ($q) use ($now) {
+                $q->whereNull('starts_at')->orWhere('starts_at', '<=', $now);
+            })
+            ->where(function ($q) use ($now) {
+                $q->whereNull('expires_at')->orWhere('expires_at', '>=', $now);
+            })
+            ->where(function ($q) {
+                $q->whereNull('total_usage_limit')
+                    ->orWhereColumn('total_used_count', '<', 'total_usage_limit');
+            });
+    }
+
+    /**
+     * Scope for active promotions explicitly marked for storefront presentation.
+     */
+    public function scopeStorefrontVisible($query, ?string $placement = null)
+    {
+        $q = $query->activeSchedule()->where('show_on_storefront', true);
+
+        if ($placement !== null) {
+            $q->where('storefront_placement', $placement);
+        }
+
+        return $q->orderByDesc('priority')->orderBy('id');
+    }
+
+    /**
+     * Get the primary promo code string if available.
+     */
+    public function getPrimaryCodeAttribute(): ?string
+    {
+        return $this->codes()->where('is_active', true)->value('code');
+    }
+
+    /**
+     * Formatted discount display string (e.g. "20% OFF", "৳500 OFF", "Free Shipping").
+     */
+    public function getFormattedDiscountAttribute(): string
+    {
+        if ($this->discount_type === 'percentage') {
+            return rtrim(rtrim((string) $this->discount_value, '0'), '.') . '% OFF';
+        }
+
+        if ($this->discount_type === 'fixed') {
+            return '৳' . number_format((float) $this->discount_value, 0) . ' OFF';
+        }
+
+        if ($this->discount_type === 'free_shipping') {
+            return 'FREE SHIPPING';
+        }
+
+        if ($this->discount_type === 'bxgy') {
+            return "BUY {$this->bxgy_buy_quantity} GET {$this->bxgy_get_quantity}";
+        }
+
+        return 'SPECIAL OFFER';
+    }
 }
+

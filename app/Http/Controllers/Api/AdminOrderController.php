@@ -14,6 +14,7 @@ use App\Models\Shipment;
 use App\Models\User;
 use App\Services\AccountingService;
 use App\Services\OrderTimelineService;
+use App\Services\PromotionEngine;
 use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -357,15 +358,16 @@ class AdminOrderController extends Controller
             $order->delivered_at = now();
         }
 
-        // If transitioning to cancelled from non-delivered, restore variant stock & reverse accounting
+        // If transitioning to cancelled from non-delivered, restore variant stock, reverse accounting & promotions
         if ($newStatus === 'cancelled' && $oldStatus !== 'cancelled') {
             $this->restoreOrderInventory($order, 'cancellation');
             AccountingService::postOrderCancellation($order);
+            PromotionEngine::reverseOrderRedemptions($order, "Order cancelled by {$request->user()->name}");
             OrderTimelineService::recordEvent(
                 order: $order,
                 eventType: 'cancelled',
                 title: 'Order Cancelled',
-                description: "Order marked as cancelled by {$request->user()->name}. Inventory and accounting reversed.",
+                description: "Order marked as cancelled by {$request->user()->name}. Inventory, promotions, and accounting reversed.",
                 actorName: $request->user()->name,
                 iconType: 'x'
             );
@@ -415,10 +417,11 @@ class AdminOrderController extends Controller
         $orderNumber = $order->order_number;
         $oldValues = $order->toArray();
 
-        // If order was not already delivered/cancelled, restore stock and reverse accounting
+        // If order was not already delivered/cancelled, restore stock, reverse accounting & promotions
         if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
             $this->restoreOrderInventory($order, 'archival');
             AccountingService::postOrderCancellation($order);
+            PromotionEngine::reverseOrderRedemptions($order, "Order archived/deleted by {$request->user()->name}");
         }
 
         OrderTimelineService::recordEvent(

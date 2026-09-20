@@ -118,6 +118,8 @@ Route::get('/brands/{slug}', [BrandController::class, 'show']);
 Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->middleware('sliding-throttle:coupon-validation');
 Route::post('/promotions/evaluate', [PromotionController::class, 'evaluate']);
 Route::get('/promotions/claimable', [PromotionController::class, 'claimable']);
+Route::get('/promotions/storefront', [PromotionController::class, 'storefrontPromotions']);
+Route::get('/promotions/campaign/{slug}', [PromotionController::class, 'campaignDetails']);
 Route::get('/orders/track/{orderNumber}', [OrderController::class, 'track']);
 Route::get('/shipping-zones', [OrderController::class, 'shippingZones']);
 Route::post('/webhooks/courier/{provider}', [\App\Http\Controllers\Api\CourierWebhookController::class, 'handle']);
@@ -365,6 +367,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
         Route::patch('/{id}/status', [AdminPromotionController::class, 'toggleStatus'])->whereNumber('id');
         Route::post('/{id}/codes', [AdminPromotionController::class, 'generateCodes'])->whereNumber('id');
         Route::post('/{id}/generate-codes', [AdminPromotionController::class, 'generateCodes'])->whereNumber('id');
+        Route::post('/upload-image', [AdminPromotionController::class, 'uploadImage']);
     });
 
     // Legacy Coupons (Preserved for 100% backward compatibility)

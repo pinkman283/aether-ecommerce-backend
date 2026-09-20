@@ -28,6 +28,7 @@ class PromotionEngine
      * @param int|null $claimedCouponId ID of the PromotionClaim
      * @param float $baseShippingRate
      * @param string $paymentMethod
+     * @param string|null $customerPhone
      * @return array
      */
     public static function evaluateCart(
@@ -37,11 +38,13 @@ class PromotionEngine
         ?string $code = null,
         ?int $claimedCouponId = null,
         float $baseShippingRate = 0.00,
-        string $paymentMethod = 'cash_on_delivery'
+        string $paymentMethod = 'cash_on_delivery',
+        ?string $customerPhone = null
     ): array {
+        $vatEnabled = Setting::isVatEnabled();
+        $vatRate = $vatEnabled ? Setting::getVatRate() : 0.0;
+
         if (empty($cartItems)) {
-            $vatEnabled = Setting::isVatEnabled();
-            $vatRate = $vatEnabled ? Setting::getVatRate() : 0.0;
             return [
                 'valid' => true,
                 'subtotal' => 0.00,
@@ -56,6 +59,7 @@ class PromotionEngine
                 'vat_enabled' => $vatEnabled,
                 'grand_total' => 0.00,
                 'applied_promotions' => [],
+                'items' => [],
                 'message' => 'Cart is empty.',
             ];
         }
@@ -111,18 +115,16 @@ class PromotionEngine
 
         // 2. Discover and evaluate Automatic Discounts
         $automaticPromotions = Promotion::where('promotion_type', 'automatic_discount')
-            ->where('status', 'active')
-            ->where(function ($q) {
-                $q->whereNull('starts_at')->orWhere('starts_at', '<=', now());
-            })
-            ->where(function ($q) {
-                $q->whereNull('expires_at')->orWhere('expires_at', '>=', now());
-            })
+            ->activeSchedule()
             ->orderByDesc('priority')
             ->get();
 
         foreach ($automaticPromotions as $autoPromo) {
-            $eval = self::evaluateSinglePromotion($autoPromo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate);
+            if (!self::canCombine($autoPromo, $appliedPromotions)) {
+                continue;
+            }
+
+            $eval = self::evaluateSinglePromotion($autoPromo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate, $customerPhone);
             if ($eval['eligible'] && $eval['discount_amount'] > 0) {
                 $appliedPromotions[] = [
                     'promotion_id' => $autoPromo->id,
@@ -141,7 +143,7 @@ class PromotionEngine
                     $orderDiscount += $eval['discount_amount'];
                 }
 
-                // If non-stackable, break after highest priority automatic discount
+                // If non-stackable, stop applying further automatic discounts
                 if (!$autoPromo->is_stackable) {
                     break;
                 }
@@ -154,7 +156,9 @@ class PromotionEngine
             $claimedClaim = PromotionClaim::with('promotion')->find($claimedCouponId);
             if (!$claimedClaim) {
                 $claimErrorMessage = 'Claimed coupon record not found.';
-            } elseif ($user && $claimedClaim->user_id !== $user->id) {
+            } elseif (!$user) {
+                $claimErrorMessage = 'Please log in to redeem your claimed coupon voucher.';
+            } elseif ($claimedClaim->user_id !== $user->id) {
                 $claimErrorMessage = 'This coupon claim belongs to a different customer account.';
             } elseif ($claimedClaim->status === 'redeemed') {
                 $claimErrorMessage = 'This claimed coupon has already been redeemed.';
@@ -162,9 +166,11 @@ class PromotionEngine
                 $claimErrorMessage = 'This claimed coupon has expired.';
             } elseif (!$claimedClaim->promotion || $claimedClaim->promotion->status !== 'active') {
                 $claimErrorMessage = 'This promotional campaign is currently inactive.';
+            } elseif (!self::canCombine($claimedClaim->promotion, $appliedPromotions)) {
+                $claimErrorMessage = "Claimed coupon '{$claimedClaim->promotion->name}' cannot be combined with existing promotions in your cart.";
             } else {
                 $claimPromo = $claimedClaim->promotion;
-                $eval = self::evaluateSinglePromotion($claimPromo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate);
+                $eval = self::evaluateSinglePromotion($claimPromo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate, $customerPhone);
                 if (!$eval['eligible']) {
                     $claimErrorMessage = $eval['reason'];
                 } else {
@@ -220,18 +226,40 @@ class PromotionEngine
                     $codeErrorMessage = "Promo code '{$cleanCode}' campaign starts on {$promo->starts_at->format('M d, Y')}.";
                 } elseif ($promo->expires_at && $promo->expires_at->isPast()) {
                     $codeErrorMessage = "Promo code '{$cleanCode}' has expired on {$promo->expires_at->format('M d, Y')}.";
+                } elseif ($promo->total_usage_limit !== null && $promo->total_used_count >= $promo->total_usage_limit) {
+                    $codeErrorMessage = "The redemption limit for promotion '{$promo->name}' has been reached.";
                 } elseif ($promoCode->usage_limit !== null && $promoCode->used_count >= $promoCode->usage_limit) {
                     $codeErrorMessage = "The redemption limit for promo code '{$cleanCode}' has been reached.";
+                } elseif (!self::canCombine($promo, $appliedPromotions)) {
+                    $codeErrorMessage = "Promo code '{$cleanCode}' cannot be combined with existing promotions in your cart.";
                 } else {
-                    // Check per-customer limit
+                    // Check per-customer limit with email normalization & phone checking
                     $alreadyRedeemedCount = 0;
+                    $normalizedEmail = $customerEmail ? self::normalizeEmail($customerEmail) : null;
+                    $cleanPhone = $customerPhone ? preg_replace('/[^0-9]/', '', $customerPhone) : null;
+
                     if ($user) {
                         $alreadyRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                            ->where('user_id', $user->id)
+                            ->where(function ($q) use ($user, $normalizedEmail) {
+                                $q->where('user_id', $user->id);
+                                if ($normalizedEmail) {
+                                    $q->orWhere('customer_email', $normalizedEmail)
+                                      ->orWhere('customer_email', $user->email);
+                                }
+                            })
+                            ->where('status', 'completed')
                             ->count();
-                    } elseif ($customerEmail) {
+                    } elseif ($normalizedEmail) {
                         $alreadyRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                            ->where('customer_email', strtolower(trim($customerEmail)))
+                            ->where(function ($q) use ($normalizedEmail, $cleanPhone) {
+                                $q->where('customer_email', $normalizedEmail);
+                                if ($cleanPhone && strlen($cleanPhone) >= 7) {
+                                    $q->orWhereHas('order', function ($oq) use ($cleanPhone) {
+                                        $oq->where('customer_phone', 'like', "%{$cleanPhone}%");
+                                    });
+                                }
+                            })
+                            ->where('status', 'completed')
                             ->count();
                     }
 
@@ -239,7 +267,7 @@ class PromotionEngine
                         $codeErrorMessage = "You have reached the maximum allowed redemptions ({$promo->per_customer_usage_limit}) for promo code '{$cleanCode}'.";
                     } else {
                         // Evaluate promotion eligibility rules
-                        $eval = self::evaluateSinglePromotion($promo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate);
+                        $eval = self::evaluateSinglePromotion($promo, $hydratedItems, $subtotal, $totalQuantity, $user, $customerEmail, $paymentMethod, $baseShippingRate, $customerPhone);
                         if (!$eval['eligible']) {
                             $codeErrorMessage = $eval['reason'];
                         } else {
@@ -273,13 +301,14 @@ class PromotionEngine
         $effectiveShipping = max(0.00, $baseShippingRate - $shippingDiscount);
         $taxable = max(0.00, $subtotal - $orderDiscount);
 
-        $vatEnabled = Setting::isVatEnabled();
-        $vatRate = $vatEnabled ? Setting::getVatRate() : 0.0;
         $vatAmount = ($vatEnabled && $vatRate > 0) ? round($taxable * ($vatRate / 100), 2) : 0.00;
         $grandTotal = round($taxable + $effectiveShipping + $vatAmount, 2);
 
         $hasError = !empty($codeErrorMessage) || !empty($claimErrorMessage);
         $errorMessage = $codeErrorMessage ?: $claimErrorMessage;
+
+        // Allocate order discount deterministically to line items
+        $allocatedItems = self::allocateDiscountToItems($hydratedItems, $orderDiscount, $vatRate);
 
         return [
             'valid' => !$hasError,
@@ -296,9 +325,146 @@ class PromotionEngine
             'vat_enabled' => $vatEnabled,
             'grand_total' => round($grandTotal, 2),
             'applied_promotions' => $appliedPromotions,
+            'items' => $allocatedItems,
             'message' => $errorMessage ?: (count($appliedPromotions) > 0 ? 'Promotion applied successfully!' : null),
             'error_message' => $errorMessage,
         ];
+    }
+
+    /**
+     * Check whether a new promotion can be combined with existing applied promotions.
+     */
+    public static function canCombine(Promotion $newPromo, array $appliedPromotions): bool
+    {
+        if (empty($appliedPromotions)) {
+            return true;
+        }
+
+        if (!$newPromo->is_stackable || !$newPromo->can_combine_with_other_promotions) {
+            return false;
+        }
+
+        $newIsShipping = ($newPromo->discount_type === 'free_shipping' || $newPromo->applies_to === 'shipping');
+        $newIsProduct = in_array($newPromo->discount_type, ['product_percentage_discount', 'product_fixed_discount', 'buy_x_get_y'])
+            || $newPromo->applies_to === 'specific_products'
+            || $newPromo->applies_to === 'specific_categories';
+        $newIsOrder = !$newIsShipping && !$newIsProduct;
+
+        foreach ($appliedPromotions as $applied) {
+            $existingPromo = Promotion::find($applied['promotion_id']);
+            if (!$existingPromo) {
+                continue;
+            }
+
+            if (!$existingPromo->is_stackable || !$existingPromo->can_combine_with_other_promotions) {
+                return false;
+            }
+
+            $existingIsShipping = ($existingPromo->discount_type === 'free_shipping' || $existingPromo->applies_to === 'shipping');
+            $existingIsProduct = in_array($existingPromo->discount_type, ['product_percentage_discount', 'product_fixed_discount', 'buy_x_get_y'])
+                || $existingPromo->applies_to === 'specific_products'
+                || $existingPromo->applies_to === 'specific_categories';
+            $existingIsOrder = !$existingIsShipping && !$existingIsProduct;
+
+            // Check new promo's combinability flags against existing
+            if ($existingIsShipping && !$newPromo->can_combine_with_shipping_discounts) {
+                return false;
+            }
+            if ($existingIsProduct && !$newPromo->can_combine_with_product_discounts) {
+                return false;
+            }
+            if ($existingIsOrder && !$newPromo->can_combine_with_order_discounts) {
+                return false;
+            }
+
+            // Check existing promo's combinability flags against new
+            if ($newIsShipping && !$existingPromo->can_combine_with_shipping_discounts) {
+                return false;
+            }
+            if ($newIsProduct && !$existingPromo->can_combine_with_product_discounts) {
+                return false;
+            }
+            if ($newIsOrder && !$existingPromo->can_combine_with_order_discounts) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Deterministic proportional largest-remainder allocation of order discount to individual items.
+     * Guarantees that sum(item.discount_amount) == totalOrderDiscount down to 0.01 cent.
+     */
+    public static function allocateDiscountToItems(array $hydratedItems, float $totalOrderDiscount, float $vatRate = 0.0): array
+    {
+        $subtotal = array_sum(array_column($hydratedItems, 'line_total'));
+        if ($subtotal <= 0 || $totalOrderDiscount <= 0) {
+            return array_map(function ($item) use ($vatRate) {
+                $lineTotal = (float) $item['line_total'];
+                $tax = $vatRate > 0 ? round($lineTotal * ($vatRate / 100), 2) : 0.00;
+                return array_merge($item, [
+                    'discount_amount' => 0.00,
+                    'net_total' => $lineTotal,
+                    'tax_amount' => $tax,
+                ]);
+            }, $hydratedItems);
+        }
+
+        $totalDiscountCents = (int) round($totalOrderDiscount * 100);
+        $allocatedItems = [];
+        $totalAllocatedCents = 0;
+
+        foreach ($hydratedItems as $index => $item) {
+            $lineTotal = (float) $item['line_total'];
+            $ratio = $lineTotal / $subtotal;
+            $exactCents = $ratio * $totalDiscountCents;
+            $baseCents = (int) floor($exactCents);
+            $remainder = $exactCents - $baseCents;
+
+            $totalAllocatedCents += $baseCents;
+            $allocatedItems[] = [
+                'index' => $index,
+                'item' => $item,
+                'base_cents' => $baseCents,
+                'remainder' => $remainder,
+                'line_total' => $lineTotal,
+            ];
+        }
+
+        // Distribute remaining cents using largest remainder
+        $remainingCents = $totalDiscountCents - $totalAllocatedCents;
+        if ($remainingCents > 0) {
+            usort($allocatedItems, function ($a, $b) {
+                return $b['remainder'] <=> $a['remainder'];
+            });
+
+            for ($i = 0; $i < $remainingCents && $i < count($allocatedItems); $i++) {
+                $allocatedItems[$i]['base_cents'] += 1;
+            }
+        }
+
+        // Restore original order
+        usort($allocatedItems, function ($a, $b) {
+            return $a['index'] <=> $b['index'];
+        });
+
+        $result = [];
+        foreach ($allocatedItems as $alloc) {
+            $item = $alloc['item'];
+            $discount = round($alloc['base_cents'] / 100, 2);
+            $discount = min($alloc['line_total'], $discount);
+            $netTotal = round(max(0.00, $alloc['line_total'] - $discount), 2);
+            $tax = $vatRate > 0 ? round($netTotal * ($vatRate / 100), 2) : 0.00;
+
+            $result[] = array_merge($item, [
+                'discount_amount' => $discount,
+                'net_total' => $netTotal,
+                'tax_amount' => $tax,
+            ]);
+        }
+
+        return $result;
     }
 
     /**
@@ -312,7 +478,8 @@ class PromotionEngine
         ?User $user,
         ?string $customerEmail,
         string $paymentMethod,
-        float $shippingRate
+        float $shippingRate,
+        ?string $customerPhone = null
     ): array {
         // 1. Min / Max Order Spend
         if ($promo->min_order_amount > 0 && $subtotal < (float) $promo->min_order_amount) {
@@ -352,13 +519,35 @@ class PromotionEngine
 
         // 3. Customer Eligibility
         if ($promo->customer_eligibility === 'first_order_only') {
-            $pastOrders = 0;
-            if ($user) {
-                $pastOrders = Order::where('user_id', $user->id)->count();
-            } elseif ($customerEmail) {
-                $pastOrders = Order::where('customer_email', strtolower(trim($customerEmail)))->count();
-            }
-            if ($pastOrders > 0) {
+            $pastOrdersQuery = Order::whereNotIn('order_status', ['cancelled']);
+            $pastOrdersQuery->where(function ($q) use ($user, $customerEmail, $customerPhone) {
+                $hasClause = false;
+                if ($user) {
+                    $q->where('user_id', $user->id);
+                    $hasClause = true;
+                }
+                if ($customerEmail) {
+                    $cleanEmail = strtolower(trim($customerEmail));
+                    if ($hasClause) {
+                        $q->orWhere('customer_email', $cleanEmail);
+                    } else {
+                        $q->where('customer_email', $cleanEmail);
+                        $hasClause = true;
+                    }
+                }
+                if ($customerPhone) {
+                    $cleanPhone = preg_replace('/\D/', '', $customerPhone);
+                    if ($cleanPhone) {
+                        if ($hasClause) {
+                            $q->orWhere('customer_phone', $cleanPhone);
+                        } else {
+                            $q->where('customer_phone', $cleanPhone);
+                        }
+                    }
+                }
+            });
+
+            if ($pastOrdersQuery->count() > 0) {
                 return [
                     'eligible' => false,
                     'discount_amount' => 0.00,
@@ -366,33 +555,56 @@ class PromotionEngine
                     'breakdown' => null,
                 ];
             }
-        } elseif ($promo->customer_eligibility === 'specific_customers' || $promo->promotion_type === 'customer_reward' || $promo->promotion_type === 'next_order_discount') {
-            // Check restriction table
-            if (!$user && !$customerEmail) {
+        } elseif ($promo->customer_eligibility === 'existing_customers') {
+            $pastOrdersQuery = Order::whereNotIn('order_status', ['cancelled']);
+            $pastOrdersQuery->where(function ($q) use ($user, $customerEmail, $customerPhone) {
+                $hasClause = false;
+                if ($user) {
+                    $q->where('user_id', $user->id);
+                    $hasClause = true;
+                }
+                if ($customerEmail) {
+                    $cleanEmail = strtolower(trim($customerEmail));
+                    if ($hasClause) {
+                        $q->orWhere('customer_email', $cleanEmail);
+                    } else {
+                        $q->where('customer_email', $cleanEmail);
+                        $hasClause = true;
+                    }
+                }
+                if ($customerPhone) {
+                    $cleanPhone = preg_replace('/\D/', '', $customerPhone);
+                    if ($cleanPhone) {
+                        if ($hasClause) {
+                            $q->orWhere('customer_phone', $cleanPhone);
+                        } else {
+                            $q->where('customer_phone', $cleanPhone);
+                        }
+                    }
+                }
+            });
+
+            if ($pastOrdersQuery->count() === 0) {
                 return [
                     'eligible' => false,
                     'discount_amount' => 0.00,
-                    'reason' => "Please sign in to redeem this customer-specific reward.",
+                    'reason' => "This promotion is only valid for returning customers with previous orders.",
                     'breakdown' => null,
                 ];
             }
-            $userId = $user?->id;
-            if (!$userId && $customerEmail) {
-                $foundUser = User::where('email', strtolower(trim($customerEmail)))->first();
-                $userId = $foundUser?->id;
-            }
-
-            if (!$userId) {
+        } elseif ($promo->customer_eligibility === 'specific_customers' || $promo->promotion_type === 'customer_reward' || $promo->promotion_type === 'next_order_discount') {
+            // Require authenticated session to prevent guest email hijacking
+            if (!$user) {
                 return [
                     'eligible' => false,
                     'discount_amount' => 0.00,
-                    'reason' => "This promotion is restricted to authorized customer accounts.",
+                    'reason' => "Please sign in to your account to redeem this customer-specific reward.",
                     'breakdown' => null,
                 ];
             }
 
             $restriction = PromotionCustomerRestriction::where('promotion_id', $promo->id)
-                ->where('user_id', $userId)
+                ->where('user_id', $user->id)
                 ->first();
 
             if (!$restriction) {
@@ -501,7 +713,6 @@ class PromotionEngine
                 break;
 
             case 'buy_x_get_y':
-                // Buy X Get Y Algorithm
                 $buyQty = max(1, (int) $promo->bxgy_buy_quantity);
                 $getQty = max(1, (int) $promo->bxgy_get_quantity);
                 $rewardPercent = (float) ($promo->bxgy_reward_discount_percent ?: 100.00);
@@ -524,7 +735,6 @@ class PromotionEngine
                     }
                 }
 
-                // Sort ascending: cheapest items get discounted (standard fair ecommerce policy)
                 sort($units);
 
                 $fullSets = (int) floor($eligibleQuantity / $bundleSize);
@@ -576,12 +786,20 @@ class PromotionEngine
                 continue;
             }
 
+            // Atomic usage limit check inside the lock
+            if ($promo->total_usage_limit !== null && $promo->total_used_count >= $promo->total_usage_limit) {
+                throw new InvalidArgumentException("Promotion '{$promo->name}' has reached its total redemption limit.");
+            }
+
             $promo->increment('total_used_count');
 
             $codeId = null;
             if (!empty($applied['code'])) {
                 $codeObj = PromotionCode::where('code', $applied['code'])->lockForUpdate()->first();
                 if ($codeObj) {
+                    if ($codeObj->usage_limit !== null && $codeObj->used_count >= $codeObj->usage_limit) {
+                        throw new InvalidArgumentException("Promo code '{$codeObj->code}' has reached its usage limit.");
+                    }
                     $codeObj->increment('used_count');
                     $codeId = $codeObj->id;
                 }
@@ -591,11 +809,13 @@ class PromotionEngine
             if ($claimId) {
                 $claim = PromotionClaim::where('id', $claimId)->lockForUpdate()->first();
                 if ($claim) {
-                    $claim->update([
-                        'status' => 'redeemed',
-                        'redeemed_at' => now(),
-                        'order_id' => $order->id,
-                    ]);
+                    if ($claim->status !== 'claimed') {
+                        throw new InvalidArgumentException("Claimed voucher is no longer available (status: {$claim->status}).");
+                    }
+                    if ($claim->expires_at && $claim->expires_at->isPast()) {
+                        throw new InvalidArgumentException("Claimed voucher has expired.");
+                    }
+                    $claim->markRedeemed($order->id);
                 }
             }
 
@@ -616,15 +836,94 @@ class PromotionEngine
                 'promotion_claim_id' => $claimId,
                 'order_id' => $order->id,
                 'user_id' => $user?->id,
-                'customer_email' => strtolower(trim($customerEmail)),
+                'customer_email' => self::normalizeEmail($customerEmail),
                 'code_used' => $applied['code'] ?? null,
                 'promotion_type' => $applied['type'] ?? $promo->promotion_type,
                 'discount_type' => $applied['discount_type'] ?? $promo->discount_type,
                 'discount_amount' => (float) ($applied['discount_amount'] ?? 0.00),
                 'order_subtotal' => (float) $order->subtotal,
                 'order_total' => (float) $order->total_amount,
+                'status' => 'completed',
                 'created_at' => now(),
             ]);
+        }
+    }
+
+    /**
+     * Production-standard email normalization to prevent per-customer limit bypass.
+     * Strips Gmail '+' alias suffixes and dots from the username for Google Mail addresses.
+     */
+    public static function normalizeEmail(string $email): string
+    {
+        $email = strtolower(trim($email));
+        $parts = explode('@', $email);
+        if (count($parts) === 2) {
+            $local = $parts[0];
+            $domain = $parts[1];
+            if (in_array($domain, ['gmail.com', 'googlemail.com'])) {
+                $local = explode('+', $local)[0];
+                $local = str_replace('.', '', $local);
+                return $local . '@' . $domain;
+            }
+            $local = explode('+', $local)[0];
+            return $local . '@' . $domain;
+        }
+        return $email;
+    }
+
+    /**
+     * Reverses promotion redemptions for a cancelled or refunded order.
+     * Restores claimed vouchers, decrements usage counters, and marks redemptions reversed.
+     */
+    public static function reverseOrderRedemptions(Order $order, string $reason = 'Order cancelled'): void
+    {
+        $redemptions = PromotionRedemption::where('order_id', $order->id)
+            ->where('status', 'completed')
+            ->get();
+
+        foreach ($redemptions as $redemption) {
+            // Decrement promotion usage counter
+            $promo = Promotion::where('id', $redemption->promotion_id)->lockForUpdate()->first();
+            if ($promo && $promo->total_used_count > 0) {
+                $promo->decrement('total_used_count');
+            }
+
+            // Decrement code usage counter
+            if ($redemption->promotion_code_id) {
+                $code = PromotionCode::where('id', $redemption->promotion_code_id)->lockForUpdate()->first();
+                if ($code && $code->used_count > 0) {
+                    $code->decrement('used_count');
+                }
+            }
+
+            // Restore claimed coupon
+            if ($redemption->promotion_claim_id) {
+                $claim = PromotionClaim::where('id', $redemption->promotion_claim_id)->lockForUpdate()->first();
+                if ($claim) {
+                    if ($claim->expires_at && $claim->expires_at->isPast()) {
+                        $claim->update([
+                            'status' => 'expired',
+                            'order_id' => null,
+                            'redeemed_at' => null,
+                        ]);
+                    } else {
+                        $claim->restoreToClaimed();
+                    }
+                }
+            }
+
+            // Restore customer restriction
+            if ($redemption->user_id) {
+                PromotionCustomerRestriction::where('promotion_id', $redemption->promotion_id)
+                    ->where('user_id', $redemption->user_id)
+                    ->update([
+                        'is_used' => false,
+                        'used_at' => null,
+                    ]);
+            }
+
+            // Mark redemption reversed
+            $redemption->reverse($reason);
         }
     }
 }

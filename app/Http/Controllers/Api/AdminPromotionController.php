@@ -54,6 +54,8 @@ class AdminPromotionController extends Controller
 
         if ($request->filled('promotion_type')) {
             $query->where('promotion_type', $request->input('promotion_type'));
+        } elseif ($request->filled('type')) {
+            $query->where('promotion_type', $request->input('type'));
         }
 
         if ($request->filled('discount_type')) {
@@ -62,6 +64,14 @@ class AdminPromotionController extends Controller
 
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));
+        }
+
+        if ($request->filled('show_on_storefront')) {
+            $query->where('show_on_storefront', filter_var($request->input('show_on_storefront'), FILTER_VALIDATE_BOOLEAN));
+        }
+
+        if ($request->filled('storefront_placement')) {
+            $query->where('storefront_placement', $request->input('storefront_placement'));
         }
 
         $perPage = (int) $request->input('per_page', 15);
@@ -138,6 +148,13 @@ class AdminPromotionController extends Controller
             'cta_text' => 'nullable|string|max:50',
             'cta_destination' => 'nullable|string|max:255',
             'is_featured' => 'boolean',
+            'show_on_storefront' => 'nullable|boolean',
+            'storefront_placement' => 'nullable|string|in:primary_hero,secondary_hero,top_strip,bottom_banner,flash_sale',
+            'headline' => 'nullable|string|max:255',
+            'subheadline' => 'nullable|string|max:255',
+            'image_alt_text' => 'nullable|string|max:255',
+            'mobile_banner_image' => 'nullable|string',
+            'terms_conditions' => 'nullable|string',
 
             // Codes (optional on creation)
             'code' => 'nullable|string|max:50',
@@ -222,6 +239,8 @@ class AdminPromotionController extends Controller
             return $promo->load(['codes', 'productTargets', 'customerRestrictions']);
         });
 
+        $this->invalidateStorefrontCache();
+
         return response()->json([
             'message' => 'Promotion campaign created successfully',
             'promotion' => $promotion,
@@ -277,11 +296,66 @@ class AdminPromotionController extends Controller
             'cta_text' => 'nullable|string|max:50',
             'cta_destination' => 'nullable|string|max:255',
             'is_featured' => 'boolean',
+            'show_on_storefront' => 'nullable|boolean',
+            'storefront_placement' => 'nullable|string|in:primary_hero,secondary_hero,top_strip,bottom_banner,flash_sale',
+            'headline' => 'nullable|string|max:255',
+            'subheadline' => 'nullable|string|max:255',
+            'image_alt_text' => 'nullable|string|max:255',
+            'mobile_banner_image' => 'nullable|string',
+            'terms_conditions' => 'nullable|string',
+            'customer_ids' => 'nullable|array',
+            'product_ids' => 'nullable|array',
+            'category_ids' => 'nullable|array',
+            'brand_ids' => 'nullable|array',
         ]);
 
         $promo->fill($validated);
         $wasDirty = $promo->isDirty();
         $promo->save();
+
+        // Sync Product Targets
+        if ($request->has('product_ids')) {
+            PromotionProductTarget::where('promotion_id', $promo->id)->where('target_type', 'product')->delete();
+            foreach ($request->input('product_ids', []) as $pid) {
+                PromotionProductTarget::create([
+                    'promotion_id' => $promo->id,
+                    'target_type' => 'product',
+                    'target_id' => (int) $pid,
+                ]);
+            }
+        }
+        if ($request->has('category_ids')) {
+            PromotionProductTarget::where('promotion_id', $promo->id)->where('target_type', 'category')->delete();
+            foreach ($request->input('category_ids', []) as $cid) {
+                PromotionProductTarget::create([
+                    'promotion_id' => $promo->id,
+                    'target_type' => 'category',
+                    'target_id' => (int) $cid,
+                ]);
+            }
+        }
+        if ($request->has('brand_ids')) {
+            PromotionProductTarget::where('promotion_id', $promo->id)->where('target_type', 'brand')->delete();
+            foreach ($request->input('brand_ids', []) as $bid) {
+                PromotionProductTarget::create([
+                    'promotion_id' => $promo->id,
+                    'target_type' => 'brand',
+                    'target_id' => (int) $bid,
+                ]);
+            }
+        }
+
+        // Sync Customer Restrictions
+        if ($request->has('customer_ids')) {
+            PromotionCustomerRestriction::where('promotion_id', $promo->id)->delete();
+            foreach ($request->input('customer_ids', []) as $uid) {
+                PromotionCustomerRestriction::create([
+                    'promotion_id' => $promo->id,
+                    'user_id' => (int) $uid,
+                    'reason' => 'Designated customer eligibility',
+                ]);
+            }
+        }
 
         if ($wasDirty) {
             AuditLog::log(
@@ -294,6 +368,8 @@ class AdminPromotionController extends Controller
                 $promo->toArray()
             );
         }
+
+        $this->invalidateStorefrontCache();
 
         return response()->json([
             'message' => 'Promotion updated successfully',
@@ -328,6 +404,8 @@ class AdminPromotionController extends Controller
             $msg
         );
 
+        $this->invalidateStorefrontCache();
+
         return response()->json(['message' => $msg]);
     }
 
@@ -342,11 +420,51 @@ class AdminPromotionController extends Controller
         $newStatus = $promo->status === 'active' ? 'paused' : 'active';
         $promo->update(['status' => $newStatus]);
 
+        $this->invalidateStorefrontCache();
+
         return response()->json([
             'message' => "Promotion is now {$newStatus}.",
             'status' => $newStatus,
             'promotion' => $promo,
         ]);
+    }
+
+    /**
+     * Upload promotional banner/mobile image with validation.
+     */
+    public function uploadImage(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'coupons.manage');
+
+        $request->validate([
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif|max:10240',
+        ]);
+
+        $file = $request->file('image');
+        $filename = 'promo_' . Str::random(16) . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $path = $file->storeAs('promotions', $filename, 'public');
+        $fullUrl = url('storage/' . $path);
+
+        return response()->json([
+            'message' => 'Promotional image uploaded successfully',
+            'image_url' => $fullUrl,
+            'path' => $path,
+            'filename' => $filename,
+        ], 201);
+    }
+
+    /**
+     * Invalidate storefront promotional caches.
+     */
+    protected function invalidateStorefrontCache(): void
+    {
+        \Illuminate\Support\Facades\Cache::forget('storefront_homepage_banners');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_all');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_primary_hero');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_secondary_hero');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_top_strip');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_bottom_banner');
+        \Illuminate\Support\Facades\Cache::forget('storefront_promotions_flash_sale');
     }
 
     /**

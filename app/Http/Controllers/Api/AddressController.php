@@ -19,18 +19,37 @@ class AddressController extends Controller
     {
         $validated = $request->validate([
             'type' => 'required|in:shipping,billing',
+            'address_name' => 'required|string|max:100',
             'full_name' => 'required|string|max:255',
             'phone' => 'nullable|string|max:30',
             'address_line1' => 'required|string|max:255',
             'address_line2' => 'nullable|string|max:255',
             'city' => 'required|string|max:100',
             'state' => 'nullable|string|max:100',
-            'postal_code' => 'required|string|max:30',
+            'postal_code' => 'nullable|string|max:30',
             'country' => 'required|string|max:100',
             'is_default' => 'boolean',
         ]);
 
         $user = $request->user();
+
+        // Enforce case-insensitive unique address name per user
+        $trimmedName = trim($validated['address_name']);
+        $nameExists = $user->addresses()
+            ->whereRaw('LOWER(address_name) = ?', [strtolower($trimmedName)])
+            ->exists();
+
+        if ($nameExists) {
+            return response()->json([
+                'message' => 'An address with this name already exists. Please choose a unique name.',
+                'errors' => [
+                    'address_name' => ['An address with this name already exists. Please choose a unique name.']
+                ]
+            ], 422);
+        }
+
+        $validated['address_name'] = $trimmedName;
+        $validated['postal_code'] = $validated['postal_code'] ?? '';
 
         if (!empty($validated['is_default'])) {
             $user->addresses()->where('type', $validated['type'])->update(['is_default' => false]);

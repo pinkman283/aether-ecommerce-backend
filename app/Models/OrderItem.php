@@ -25,7 +25,9 @@ class OrderItem extends Model
         'cogs_total',
         'quantity',
         'discount_amount',
+        'tax_amount',
         'total_price',
+        'net_total',
         'gross_profit',
     ];
 
@@ -35,9 +37,20 @@ class OrderItem extends Model
         'cogs_total' => 'float',
         'quantity' => 'integer',
         'discount_amount' => 'float',
+        'tax_amount' => 'float',
         'total_price' => 'float',
+        'net_total' => 'float',
         'gross_profit' => 'float',
     ];
+
+    public function getNetUnitPriceAttribute(): float
+    {
+        if ($this->quantity <= 0) {
+            return (float) $this->unit_price;
+        }
+        $net = ($this->net_total ?? (($this->unit_price * $this->quantity) - ($this->discount_amount ?? 0)));
+        return round($net / $this->quantity, 2);
+    }
 
     public function order(): BelongsTo
     {

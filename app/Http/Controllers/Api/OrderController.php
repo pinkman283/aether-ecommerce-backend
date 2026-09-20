@@ -265,7 +265,8 @@ class OrderController extends Controller
                     $validated['coupon_code'] ?? null,
                     $validated['claimed_coupon_id'] ?? null,
                     $baseShipping,
-                    $validated['payment_method']
+                    $validated['payment_method'],
+                    $validated['customer_phone'] ?? null
                 );
 
                 // If customer explicitly entered a coupon code or claim that is invalid, reject
@@ -320,10 +321,20 @@ class OrderController extends Controller
                     StoreCreditService::applyToOrder($order, $requestedCredit, $customerRecord);
                 }
 
-                // Record authoritative promotion redemption audit records
-                PromotionEngine::recordOrderRedemption($order, $eval, $customerRecord, $validated['customer_email']);
+                // Record authoritative promotion redemption audit records (with concurrency safety)
+                try {
+                    PromotionEngine::recordOrderRedemption($order, $eval, $customerRecord, $validated['customer_email']);
+                } catch (\InvalidArgumentException $ex) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'coupon_code' => [$ex->getMessage()],
+                    ]);
+                }
 
-                foreach ($itemsToCreate as $item) {
+                foreach ($itemsToCreate as $index => $item) {
+                    $allocated = $eval['items'][$index] ?? [];
+                    $item['discount_amount'] = $allocated['discount_amount'] ?? 0.00;
+                    $item['tax_amount'] = $allocated['tax_amount'] ?? 0.00;
+                    $item['net_total'] = $allocated['net_total'] ?? $item['total_price'];
                     $order->items()->create($item);
                 }
 

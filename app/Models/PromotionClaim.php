@@ -57,4 +57,22 @@ class PromotionClaim extends Model
 
         return true;
     }
+
+    public function markRedeemed(int $orderId): bool
+    {
+        return $this->update([
+            'status' => 'redeemed',
+            'redeemed_at' => now(),
+            'order_id' => $orderId,
+        ]);
+    }
+
+    public function restoreToClaimed(): bool
+    {
+        return $this->update([
+            'status' => 'claimed',
+            'redeemed_at' => null,
+            'order_id' => null,
+        ]);
+    }
 }

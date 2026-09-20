@@ -25,6 +25,9 @@ class PromotionRedemption extends Model
         'discount_amount',
         'order_subtotal',
         'order_total',
+        'status',
+        'reversed_at',
+        'reversal_reason',
         'created_at',
     ];
 
@@ -34,8 +37,22 @@ class PromotionRedemption extends Model
             'discount_amount' => 'decimal:2',
             'order_subtotal' => 'decimal:2',
             'order_total' => 'decimal:2',
+            'reversed_at' => 'datetime',
             'created_at' => 'datetime',
         ];
+    }
+
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'completed');
+    }
+
+    public function reverse(string $reason = 'Order cancelled'): bool
+    {
+        $this->status = 'reversed';
+        $this->reversed_at = now();
+        $this->reversal_reason = $reason;
+        return $this->save();
     }
 
     public function promotion(): BelongsTo

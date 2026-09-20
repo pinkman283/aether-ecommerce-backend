@@ -15,6 +15,7 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
+        'customer_id',
         'name',
         'email',
         'password',
@@ -33,6 +34,40 @@ class User extends Authenticatable
         'failed_login_attempts',
         'locked_until',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function (User $user) {
+            if ($user->role === 'customer' && empty($user->customer_id)) {
+                $user->customer_id = self::generateCustomerId($user->customer_type);
+            }
+        });
+    }
+
+    public static function generateCustomerId(?string $customerType = 'registered'): string
+    {
+        $prefix = ($customerType === 'guest') ? 'GUEST-' : 'CUST-';
+
+        $latest = self::where('customer_id', 'like', "{$prefix}%")
+            ->orderByRaw('LENGTH(customer_id) DESC')
+            ->orderBy('customer_id', 'desc')
+            ->value('customer_id');
+
+        if ($latest && preg_match('/^' . preg_quote($prefix, '/') . '(\d+)$/', $latest, $matches)) {
+            $nextNumber = ((int) $matches[1]) + 1;
+        } else {
+            $nextNumber = 10001;
+        }
+
+        $candidate = sprintf('%s%05d', $prefix, $nextNumber);
+
+        while (self::where('customer_id', $candidate)->exists()) {
+            $nextNumber++;
+            $candidate = sprintf('%s%05d', $prefix, $nextNumber);
+        }
+
+        return $candidate;
+    }
 
     protected $hidden = [
         'password',

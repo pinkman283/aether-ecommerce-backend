@@ -94,7 +94,7 @@ class OrderReturnService
                         'qc_status' => 'pending',
                         'disposition' => 'pending',
                         'unit_price' => (float) $orderItem->unit_price,
-                        'refund_unit_price' => (float) $orderItem->unit_price,
+                        'refund_unit_price' => (float) $orderItem->net_unit_price,
                         'refund_subtotal' => 0.00,
                     ]);
                 }
@@ -104,6 +104,7 @@ class OrderReturnService
                     $orderItem = $orderItemId ? OrderItem::find($orderItemId) : null;
                     $qty = max(1, (int) ($itemRow['quantity_returned'] ?? 1));
                     $unitPrice = $orderItem ? (float) $orderItem->unit_price : (float) ($itemRow['unit_price'] ?? 0);
+                    $refundUnitPrice = $orderItem ? (float) $orderItem->net_unit_price : (float) ($itemRow['refund_unit_price'] ?? $unitPrice);
 
                     $orderReturn->items()->create([
                         'order_item_id' => $orderItem?->id,
@@ -115,7 +116,7 @@ class OrderReturnService
                         'qc_status' => 'pending',
                         'disposition' => 'pending',
                         'unit_price' => $unitPrice,
-                        'refund_unit_price' => $unitPrice,
+                        'refund_unit_price' => $refundUnitPrice,
                         'refund_subtotal' => 0.00,
                         'qc_notes' => $itemRow['qc_notes'] ?? null,
                     ]);

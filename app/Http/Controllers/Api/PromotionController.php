@@ -353,4 +353,127 @@ class PromotionController extends Controller
             'transactions' => $transactions,
         ]);
     }
+
+    /**
+     * Public Storefront Promotions Endpoint:
+     * Returns active promotions configured for storefront presentation.
+     */
+    public function storefrontPromotions(Request $request): JsonResponse
+    {
+        $placement = $request->query('placement'); // primary_hero, secondary_hero, top_strip, bottom_banner, flash_sale
+        $cacheKey = 'storefront_promotions_' . ($placement ?: 'all');
+
+        $promotions = \Illuminate\Support\Facades\Cache::remember($cacheKey, 300, function () use ($placement) {
+            $query = Promotion::storefrontVisible($placement ? (string) $placement : null)
+                ->with(['codes' => fn($q) => $q->where('is_active', true)]);
+
+            return $query->get()->map(function ($promo) {
+                return [
+                    'id' => $promo->id,
+                    'name' => $promo->name,
+                    'slug' => $promo->slug,
+                    'headline' => $promo->headline ?: $promo->name,
+                    'subheadline' => $promo->subheadline ?: $promo->description,
+                    'description' => $promo->description,
+                    'badge_text' => $promo->badge_text ?: $promo->formatted_discount,
+                    'image_alt_text' => $promo->image_alt_text ?: $promo->name,
+                    'banner_image' => $promo->banner_image,
+                    'mobile_banner_image' => $promo->mobile_banner_image ?: $promo->banner_image,
+                    'cta_text' => $promo->cta_text ?: 'Shop Now',
+                    'cta_destination' => $promo->cta_destination ?: ('/promotions/' . $promo->slug),
+                    'computed_link' => $promo->cta_destination ?: ('/promotions/' . $promo->slug),
+                    'storefront_placement' => $promo->storefront_placement,
+                    'promotion_type' => $promo->promotion_type,
+                    'discount_type' => $promo->discount_type,
+                    'discount_value' => (float) $promo->discount_value,
+                    'formatted_discount' => $promo->formatted_discount,
+                    'min_order_amount' => (float) $promo->min_order_amount,
+                    'max_discount_amount' => $promo->max_discount_amount ? (float) $promo->max_discount_amount : null,
+                    'primary_code' => $promo->primary_code,
+                    'starts_at' => $promo->starts_at?->toISOString(),
+                    'expires_at' => $promo->expires_at?->toISOString(),
+                    'terms_conditions' => $promo->terms_conditions,
+                    'is_active' => true,
+                ];
+            });
+        });
+
+        return response()->json($promotions);
+    }
+
+    /**
+     * Public Campaign Landing Page Endpoint:
+     * Returns full promotion details and eligible products for /promotions/[slug].
+     */
+    public function campaignDetails(string $slug): JsonResponse
+    {
+        $promo = Promotion::where('slug', $slug)
+            ->orWhere('id', is_numeric($slug) ? (int) $slug : 0)
+            ->with(['codes' => fn($q) => $q->where('is_active', true), 'productTargets'])
+            ->first();
+
+        if (!$promo) {
+            return response()->json([
+                'found' => false,
+                'message' => 'Campaign not found.',
+            ], 404);
+        }
+
+        $isActive = $promo->isScheduleActive();
+
+        // Hydrate eligible products
+        $products = [];
+        if ($isActive) {
+            $productQuery = \App\Models\Product::where('is_active', true)->with(['category', 'primaryImage', 'images']);
+
+            if ($promo->applies_to === 'specific_products') {
+                $targetIds = $promo->productTargets->where('target_type', 'product')->pluck('target_id');
+                $productQuery->whereIn('id', $targetIds);
+            } elseif ($promo->applies_to === 'specific_categories') {
+                $categoryIds = $promo->productTargets->where('target_type', 'category')->pluck('target_id');
+                $productQuery->whereIn('category_id', $categoryIds);
+            } elseif ($promo->applies_to === 'specific_brands') {
+                $brandIds = $promo->productTargets->where('target_type', 'brand')->pluck('target_id');
+                $productQuery->whereIn('brand_id', $brandIds);
+            } else {
+                // Entire order / all products: return featured products
+                $productQuery->latest();
+            }
+
+            $products = $productQuery->take(24)->get();
+        }
+
+        return response()->json([
+            'found' => true,
+            'is_active' => $isActive,
+            'promotion' => [
+                'id' => $promo->id,
+                'name' => $promo->name,
+                'slug' => $promo->slug,
+                'headline' => $promo->headline ?: $promo->name,
+                'subheadline' => $promo->subheadline ?: $promo->description,
+                'description' => $promo->description,
+                'badge_text' => $promo->badge_text ?: $promo->formatted_discount,
+                'image_alt_text' => $promo->image_alt_text ?: $promo->name,
+                'banner_image' => $promo->banner_image,
+                'mobile_banner_image' => $promo->mobile_banner_image ?: $promo->banner_image,
+                'cta_text' => $promo->cta_text ?: 'Shop Now',
+                'cta_destination' => $promo->cta_destination,
+                'storefront_placement' => $promo->storefront_placement,
+                'promotion_type' => $promo->promotion_type,
+                'discount_type' => $promo->discount_type,
+                'discount_value' => (float) $promo->discount_value,
+                'formatted_discount' => $promo->formatted_discount,
+                'min_order_amount' => (float) $promo->min_order_amount,
+                'max_discount_amount' => $promo->max_discount_amount ? (float) $promo->max_discount_amount : null,
+                'primary_code' => $promo->primary_code,
+                'starts_at' => $promo->starts_at?->toISOString(),
+                'expires_at' => $promo->expires_at?->toISOString(),
+                'terms_conditions' => $promo->terms_conditions,
+                'applies_to' => $promo->applies_to,
+            ],
+            'products' => $products,
+        ]);
+    }
 }
+

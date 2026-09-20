@@ -124,6 +124,16 @@ class Banner extends Model
             return false;
         }
 
+        // If banner is linked to a promotion, the promotion must also be active and within schedule
+        if ($this->promotion_id) {
+            if (!$this->relationLoaded('promotion')) {
+                $this->load('promotion');
+            }
+            if (!$this->promotion || !$this->promotion->isScheduleActive()) {
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -139,6 +149,12 @@ class Banner extends Model
             })
             ->where(function ($q) use ($now) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>=', $now);
+            })
+            ->where(function ($q) {
+                $q->whereNull('promotion_id')
+                    ->orWhereHas('promotion', function ($pq) {
+                        $pq->activeSchedule();
+                    });
             });
     }
 }
