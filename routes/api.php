@@ -180,7 +180,15 @@ Route::get('/pages/{slug}', function (string $slug) {
     return response()->json(\App\Models\CmsPage::where('slug', $slug)->where('is_active', true)->firstOrFail());
 });
 Route::get('/store-navigation', function () {
+    $columns = \App\Models\FooterColumn::where('is_active', true)
+        ->orderBy('sort_order')
+        ->with(['links' => function ($query) {
+            $query->where('is_active', true)->orderBy('sort_order');
+        }])
+        ->get();
+
     return response()->json([
+        'footer_columns' => $columns,
         'footer_links' => \App\Models\FooterLink::where('is_active', true)->orderBy('sort_order')->get()->groupBy('column_group'),
         'social_links' => \App\Models\SocialLink::where('is_active', true)->orderBy('sort_order')->get(),
     ]);
@@ -585,10 +593,17 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
         Route::patch('/pages/{id}/status', [AdminOnlineStoreController::class, 'togglePageStatus']);
         Route::delete('/pages/{id}', [AdminOnlineStoreController::class, 'destroyPage']);
 
+        Route::get('/footer-columns', [AdminOnlineStoreController::class, 'footerColumns']);
+        Route::post('/footer-columns', [AdminOnlineStoreController::class, 'storeFooterColumn']);
+        Route::put('/footer-columns/{id}', [AdminOnlineStoreController::class, 'updateFooterColumn']);
+        Route::delete('/footer-columns/{id}', [AdminOnlineStoreController::class, 'destroyFooterColumn']);
+        Route::post('/footer-columns/reorder', [AdminOnlineStoreController::class, 'reorderFooterColumns']);
+
         Route::get('/footer-links', [AdminOnlineStoreController::class, 'footerLinks']);
         Route::post('/footer-links', [AdminOnlineStoreController::class, 'storeFooterLink']);
         Route::put('/footer-links/{id}', [AdminOnlineStoreController::class, 'updateFooterLink']);
         Route::delete('/footer-links/{id}', [AdminOnlineStoreController::class, 'destroyFooterLink']);
+        Route::post('/footer-links/reorder', [AdminOnlineStoreController::class, 'reorderFooterLinks']);
 
         Route::get('/social-links', [AdminOnlineStoreController::class, 'socialLinks']);
         Route::post('/social-links', [AdminOnlineStoreController::class, 'storeSocialLink']);

@@ -8,6 +8,7 @@ use App\Models\BlogPost;
 use App\Models\BlogTag;
 use App\Models\CmsPage;
 use App\Models\Color;
+use App\Models\FooterColumn;
 use App\Models\FooterLink;
 use App\Models\SocialLink;
 use App\Models\User;
@@ -178,44 +179,85 @@ class Phase1CmsAndColorsSeeder extends Seeder
             CmsPage::firstOrCreate(['slug' => $p['slug']], $p);
         }
 
-        // 7. Footer Navigation Links
-        $footerLinks = [
-            // Quick Links
-            ['column_group' => 'Quick Links', 'title' => 'Shop All Gear', 'url' => '/shop', 'sort_order' => 1],
-            ['column_group' => 'Quick Links', 'title' => 'New Arrivals', 'url' => '/shop?filter=new', 'sort_order' => 2],
-            ['column_group' => 'Quick Links', 'title' => 'Best Sellers', 'url' => '/shop?filter=best_sellers', 'sort_order' => 3],
-            ['column_group' => 'Quick Links', 'title' => 'Brand Showcase', 'url' => '/brands', 'sort_order' => 4],
-            // Customer Care
-            ['column_group' => 'Customer Care', 'title' => 'Track Your Order', 'url' => '/orders/track', 'sort_order' => 1],
-            ['column_group' => 'Customer Care', 'title' => 'Shipping & Delivery', 'url' => '/pages/shipping-delivery-policy', 'sort_order' => 2],
-            ['column_group' => 'Customer Care', 'title' => 'Returns & Warranty', 'url' => '/pages/faq', 'sort_order' => 3],
-            ['column_group' => 'Customer Care', 'title' => 'Editorial Blog', 'url' => '/blog', 'sort_order' => 4],
-            // Company
-            ['column_group' => 'Company', 'title' => 'About Aether Labs', 'url' => '/pages/about-us', 'sort_order' => 1],
-            ['column_group' => 'Company', 'title' => 'Engineering Journal', 'url' => '/blog', 'sort_order' => 2],
-            ['column_group' => 'Company', 'title' => 'FAQ & Help Center', 'url' => '/pages/faq', 'sort_order' => 3],
-            // Legal
-            ['column_group' => 'Legal', 'title' => 'Terms of Service', 'url' => '/pages/terms-and-conditions', 'sort_order' => 1],
-            ['column_group' => 'Legal', 'title' => 'Privacy Policy', 'url' => '/pages/privacy-policy', 'sort_order' => 2],
+        // 7. Footer Navigation Columns & Links
+        $columns = [
+            [
+                'title' => 'SHOP',
+                'sort_order' => 1,
+                'links' => [
+                    ['title' => 'All Products', 'url' => '/products', 'sort_order' => 1],
+                    ['title' => 'Disposable Vapes', 'url' => '/products?category=disposable-vapes', 'sort_order' => 2],
+                    ['title' => 'Pod Systems', 'url' => '/products?category=pod-systems', 'sort_order' => 3],
+                    ['title' => 'E-Liquids', 'url' => '/products?category=e-liquids', 'sort_order' => 4],
+                    ['title' => 'Vape Accessories', 'url' => '/products?category=vape-accessories', 'sort_order' => 5],
+                    ['title' => 'New Arrivals', 'url' => '/products?sort=newest', 'sort_order' => 6],
+                    ['title' => 'Best Sellers', 'url' => '/products?sort=best-selling', 'sort_order' => 7],
+                ],
+            ],
+            [
+                'title' => 'CUSTOMER CARE',
+                'sort_order' => 2,
+                'links' => [
+                    ['title' => 'Contact Us', 'url' => '/contact', 'sort_order' => 1],
+                    ['title' => 'Track Order', 'url' => '/track', 'sort_order' => 2],
+                    ['title' => 'Shipping & Delivery', 'url' => '/shipping-policy', 'sort_order' => 3],
+                    ['title' => 'Returns & Refunds', 'url' => '/refund-policy', 'sort_order' => 4],
+                    ['title' => 'FAQ', 'url' => '/faq', 'sort_order' => 5],
+                    ['title' => 'Support', 'url' => '/contact', 'sort_order' => 6],
+                ],
+            ],
+            [
+                'title' => 'INFORMATION',
+                'sort_order' => 3,
+                'links' => [
+                    ['title' => 'About Us', 'url' => '/about', 'sort_order' => 1],
+                    ['title' => 'Age Verification', 'url' => '/pages/age-verification', 'sort_order' => 2],
+                    ['title' => 'Privacy Policy', 'url' => '/privacy', 'sort_order' => 3],
+                    ['title' => 'Terms & Conditions', 'url' => '/terms', 'sort_order' => 4],
+                    ['title' => 'Cookie Policy', 'url' => '/pages/cookie-policy', 'sort_order' => 5],
+                ],
+            ],
+            [
+                'title' => 'QUICK LINKS',
+                'sort_order' => 4,
+                'links' => [
+                    ['title' => 'My Account', 'url' => '/dashboard', 'sort_order' => 1],
+                    ['title' => 'Cart', 'url' => '/checkout', 'sort_order' => 2],
+                    ['title' => 'Wishlist', 'url' => '/dashboard', 'sort_order' => 3],
+                    ['title' => 'Promotions', 'url' => '/promotions', 'sort_order' => 4],
+                    ['title' => 'Order History', 'url' => '/dashboard', 'sort_order' => 5],
+                ],
+            ],
         ];
 
-        foreach ($footerLinks as $fl) {
-            FooterLink::firstOrCreate(['title' => $fl['title'], 'column_group' => $fl['column_group']], [
-                'column_group' => $fl['column_group'],
-                'title' => $fl['title'],
-                'url' => $fl['url'],
-                'sort_order' => $fl['sort_order'],
+        foreach ($columns as $c) {
+            $col = FooterColumn::firstOrCreate(['title' => $c['title']], [
+                'title' => $c['title'],
+                'sort_order' => $c['sort_order'],
                 'is_active' => true,
             ]);
+
+            foreach ($c['links'] as $fl) {
+                FooterLink::firstOrCreate(['title' => $fl['title'], 'footer_column_id' => $col->id], [
+                    'footer_column_id' => $col->id,
+                    'column_group' => $c['title'],
+                    'title' => $fl['title'],
+                    'url' => $fl['url'],
+                    'is_external' => false,
+                    'open_in_new_tab' => false,
+                    'sort_order' => $fl['sort_order'],
+                    'is_active' => true,
+                ]);
+            }
         }
 
         // 8. Social Links
         $socials = [
-            ['platform' => 'X (Twitter)', 'url' => 'https://x.com/aetherlabs', 'icon' => 'twitter', 'sort_order' => 1],
-            ['platform' => 'Instagram', 'url' => 'https://instagram.com/aetherlabs', 'icon' => 'instagram', 'sort_order' => 2],
-            ['platform' => 'YouTube', 'url' => 'https://youtube.com/c/aetherlabs', 'icon' => 'youtube', 'sort_order' => 3],
-            ['platform' => 'GitHub', 'url' => 'https://github.com/aetherlabs', 'icon' => 'github', 'sort_order' => 4],
-            ['platform' => 'Discord', 'url' => 'https://discord.gg/aetherlabs', 'icon' => 'discord', 'sort_order' => 5],
+            ['platform' => 'Instagram', 'url' => 'https://instagram.com/inhaliq', 'icon' => 'instagram', 'sort_order' => 1],
+            ['platform' => 'Facebook', 'url' => 'https://facebook.com/inhaliq', 'icon' => 'facebook', 'sort_order' => 2],
+            ['platform' => 'YouTube', 'url' => 'https://youtube.com/@inhaliq', 'icon' => 'youtube', 'sort_order' => 3],
+            ['platform' => 'X (Twitter)', 'url' => 'https://x.com/inhaliq', 'icon' => 'twitter', 'sort_order' => 4],
+            ['platform' => 'Discord', 'url' => 'https://discord.gg/inhaliq', 'icon' => 'discord', 'sort_order' => 5],
         ];
 
         foreach ($socials as $sl) {
