@@ -134,11 +134,11 @@ class Phase1CmsAndColorsSeeder extends Seeder
         // 6. CMS Pages
         $pages = [
             [
-                'title' => 'About Aether Hardware Labs',
+                'title' => 'About Inheliq',
                 'slug' => 'about-us',
-                'meta_title' => 'About Us - Precision Hardware Labs',
-                'meta_description' => 'Crafting uncompromising audio monitors, custom keyboards, and everyday carry gear designed for creative purists.',
-                'content' => "## We Build Tools for Uncompromising Minds\n\nFounded in 2024 by a collective of industrial designers, acoustic engineers, and software architects, Aether Hardware Labs exists to eliminate mediocre gear.\n\nEvery knob, hinge, circuit board, and seam is obsessively tested in our workshop. We do not chase fleeting fashion cycles — we produce heirloom-grade hardware meant to serve your daily creative ritual for decades.\n\n### Design Principles\n1. **Acoustic & Tactile Honesty**: Never mask poor physics with aggressive digital post-processing.\n2. **Material Authenticity**: Real Grade 5 Titanium, 6063 Aluminum, Beryllium, and Cordura. No faux chrome coatings.\n3. **Repairability & Openness**: Built with standard hex fasteners, hot-swappable sockets, and user-serviceable assemblies.",
+                'meta_title' => 'About Us - Authentic Vaping Hardware & Flavors',
+                'meta_description' => 'Learn about our dedication to 100% authentic vape devices, verified e-liquids, and responsible adult advocacy.',
+                'content' => "## Elevate Every Inhale\n\nAt Inheliq, we believe adult vape enthusiasts deserve effortless access to verified, authentic hardware and premium flavors without compromise.\n\nFounded with a dedication to quality and transparency, our catalog features handpicked disposable vapes, pod systems, e-liquids, and accessories from the world's most trusted manufacturers.\n\n### Our Quality Standard\n1. **100% Authentic Products**: All hardware and e-liquids are sourced through authorized channels.\n2. **Adult-Only Advocacy**: Strictly 18+ verification with zero tolerance for underage access.\n3. **Express Dispatch**: Swift fulfillment and dedicated customer support.",
                 'is_active' => true,
             ],
             [
