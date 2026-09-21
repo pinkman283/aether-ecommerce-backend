@@ -342,7 +342,13 @@ class OrderController extends Controller
                 \App\Models\CustomerIpLog::record($customerRecord, $clientIp, 'order_created', $order->id);
 
                 // Execute FIFO Costing Layer Consumption & Compute COGS
-                $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
+                try {
+                    $order = \App\Services\InventoryCostingService::fulfillOrderAndComputeCogs($order);
+                } catch (\Throwable $costingEx) {
+                    \Illuminate\Support\Facades\Log::warning("Inventory costing computation deferred for Order #{$order->order_number}: " . $costingEx->getMessage(), [
+                        'exception' => $costingEx,
+                    ]);
+                }
 
                 // Post Real Double-Entry Sale Journal Entry to General Ledger
                 try {
