@@ -450,7 +450,7 @@ class AdminCustomerController extends Controller
 
     public function destroy(Request $request, int $id): JsonResponse
     {
-        $this->checkPermission($request, 'customers.manage');
+        $this->checkPermission($request, 'customers.delete', 'customers.manage');
 
         $customer = User::where('role', 'customer')->findOrFail($id);
         $name = $customer->name;
@@ -478,7 +478,7 @@ class AdminCustomerController extends Controller
 
     public function bulkDestroy(Request $request): JsonResponse
     {
-        $this->checkPermission($request, 'customers.manage');
+        $this->checkPermission($request, 'customers.delete', 'customers.manage');
 
         $validated = $request->validate([
             'ids' => 'required|array|min:1',
