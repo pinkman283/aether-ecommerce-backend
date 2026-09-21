@@ -24,7 +24,11 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         if (app()->runningInConsole()) {
-            \Illuminate\Support\Facades\Schema::disableForeignKeyConstraints();
+            try {
+                \Illuminate\Support\Facades\Schema::disableForeignKeyConstraints();
+            } catch (\Throwable $e) {
+                // Silently ignore if database is unreachable during CLI build or package discovery
+            }
         }
 
         // 1. Customer Authentication Rate Limiter (3-Tier Defense: Composite + Target Account + IP Spray Ceiling)
