@@ -52,6 +52,17 @@ class Category extends Model
     /**
      * Recursively retrieve all descendant category IDs
      */
+    protected static function booted(): void
+    {
+        static::saved(function () {
+            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+        });
+
+        static::deleted(function () {
+            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+        });
+    }
+
     public function getAllChildrenIds(): array
     {
         $ids = [];
@@ -67,4 +78,27 @@ class Category extends Model
     {
         return $this->hasMany(Product::class);
     }
+
+    public function subcategoryProducts(): HasMany
+    {
+        return $this->hasMany(Product::class, 'subcategory_id');
+    }
+
+    public function brands()
+    {
+        return $this->belongsToMany(Brand::class, 'category_brand')
+            ->withPivot(['display_order', 'is_in_navbar', 'is_featured'])
+            ->orderByPivot('display_order')
+            ->withTimestamps();
+    }
+
+    public function navbarBrands()
+    {
+        return $this->belongsToMany(Brand::class, 'category_brand')
+            ->wherePivot('is_in_navbar', true)
+            ->withPivot(['display_order', 'is_in_navbar', 'is_featured'])
+            ->orderByPivot('display_order')
+            ->withTimestamps();
+    }
 }
+

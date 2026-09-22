@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\AdminInventoryController;
 use App\Http\Controllers\Api\AdminInventoryMovementController;
 use App\Http\Controllers\Api\AdminInventoryValuationController;
 use App\Http\Controllers\Api\AdminLeadController;
+use App\Http\Controllers\Api\AdminNavigationController;
 use App\Http\Controllers\Api\AdminOnlineStoreController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminPosController;
@@ -50,6 +51,7 @@ use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PromotionController;
 use App\Http\Controllers\Api\PublicBannerController;
+use App\Http\Controllers\Api\PublicNavigationController;
 use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\ThemeController;
 use Illuminate\Support\Facades\Route;
@@ -130,6 +132,9 @@ Route::get('/theme-settings', [ThemeController::class, 'publicSettings']);
 Route::get('/sitemap.xml', [AdminSettingsController::class, 'sitemapXml']);
 Route::get('/integrations/tracking', [AdminSettingsController::class, 'publicTrackingScripts']);
 Route::post('/products/{productId}/reviews', [ReviewController::class, 'store'])->middleware('sliding-throttle:customer-reviews');
+
+// Dynamic Storefront Header Navigation
+Route::get('/navigation/header', [PublicNavigationController::class, 'header']);
 
 // Dynamic Storefront Homepage Promotional Banners
 Route::get('/homepage/banners', [PublicBannerController::class, 'homepage']);
@@ -611,5 +616,34 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
         Route::post('/social-links', [AdminOnlineStoreController::class, 'storeSocialLink']);
         Route::put('/social-links/{id}', [AdminOnlineStoreController::class, 'updateSocialLink']);
         Route::delete('/social-links/{id}', [AdminOnlineStoreController::class, 'destroySocialLink']);
+
+        // Navigation Menu Manager
+        Route::prefix('navigation')->group(function () {
+            Route::get('/', [AdminNavigationController::class, 'index']);
+            Route::get('/tree', [AdminNavigationController::class, 'tree']);
+            Route::get('/options', [AdminNavigationController::class, 'options']);
+            Route::post('/', [AdminNavigationController::class, 'store']);
+            Route::post('/reorder', [AdminNavigationController::class, 'reorder']);
+            Route::get('/category-brands/{categoryId}', [AdminNavigationController::class, 'getCategoryBrands']);
+            Route::match(['post', 'put'], '/category-brands/{categoryId}', [AdminNavigationController::class, 'updateCategoryBrands']);
+            Route::get('/{id}', [AdminNavigationController::class, 'show']);
+            Route::put('/{id}', [AdminNavigationController::class, 'update']);
+            Route::delete('/{id}', [AdminNavigationController::class, 'destroy']);
+        });
+    });
+
+    // Dynamic Header Navigation System Alias
+    Route::prefix('navigation')->group(function () {
+        Route::get('/', [AdminNavigationController::class, 'index']);
+        Route::get('/tree', [AdminNavigationController::class, 'tree']);
+        Route::get('/options', [AdminNavigationController::class, 'options']);
+        Route::post('/', [AdminNavigationController::class, 'store']);
+        Route::post('/reorder', [AdminNavigationController::class, 'reorder']);
+        Route::get('/category-brands/{categoryId}', [AdminNavigationController::class, 'getCategoryBrands']);
+        Route::match(['post', 'put'], '/category-brands/{categoryId}', [AdminNavigationController::class, 'updateCategoryBrands']);
+        Route::get('/{id}', [AdminNavigationController::class, 'show']);
+        Route::put('/{id}', [AdminNavigationController::class, 'update']);
+        Route::delete('/{id}', [AdminNavigationController::class, 'destroy']);
     });
 });
+

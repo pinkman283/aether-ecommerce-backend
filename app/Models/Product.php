@@ -15,6 +15,8 @@ class Product extends Model
 
     protected $fillable = [
         'category_id',
+        'subcategory_id',
+        'brand_id',
         'name',
         'slug',
         'brand',
@@ -40,6 +42,8 @@ class Product extends Model
     protected function casts(): array
     {
         return [
+            'brand_id' => 'integer',
+            'subcategory_id' => 'integer',
             'price' => 'float',
             'cost_price' => 'float',
             'compare_at_price' => 'float',
@@ -55,10 +59,55 @@ class Product extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        static::saving(function (Product $product) {
+            // Keep brand string in sync with brand_id
+            if ($product->brand_id && empty($product->brand)) {
+                $brand = Brand::find($product->brand_id);
+                if ($brand) {
+                    $product->brand = $brand->name;
+                }
+            } elseif (!empty($product->brand) && !$product->brand_id) {
+                $brand = Brand::firstOrCreate(
+                    ['name' => trim($product->brand)],
+                    ['slug' => \Illuminate\Support\Str::slug(trim($product->brand))]
+                );
+                $product->brand_id = $brand->id;
+            }
+        });
+
+        static::saved(function (Product $product) {
+            // Auto-maintain category_brand catalog relationship
+            if ($product->category_id && $product->brand_id) {
+                \Illuminate\Support\Facades\DB::table('category_brand')->updateOrInsert(
+                    ['category_id' => $product->category_id, 'brand_id' => $product->brand_id],
+                    ['updated_at' => now(), 'created_at' => now()]
+                );
+            }
+            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+        });
+
+        static::deleted(function () {
+            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+        });
+    }
+
     public function category(): BelongsTo
     {
         return $this->belongsTo(Category::class);
     }
+
+    public function subcategory(): BelongsTo
+    {
+        return $this->belongsTo(Category::class, 'subcategory_id');
+    }
+
+    public function brandRelation(): BelongsTo
+    {
+        return $this->belongsTo(Brand::class, 'brand_id');
+    }
+
 
     public function images(): HasMany
     {

@@ -30,6 +30,19 @@ class Brand extends Model
 
     public function products(): HasMany
     {
+        return $this->hasMany(Product::class, 'brand_id');
+    }
+
+    public function productsLegacy(): HasMany
+    {
         return $this->hasMany(Product::class, 'brand', 'name');
     }
+
+    public function categories()
+    {
+        return $this->belongsToMany(Category::class, 'category_brand')
+            ->withPivot(['display_order', 'is_in_navbar', 'is_featured'])
+            ->withTimestamps();
+    }
 }
+

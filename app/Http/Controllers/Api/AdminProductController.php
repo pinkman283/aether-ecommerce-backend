@@ -16,7 +16,7 @@ class AdminProductController extends Controller
     {
         $this->checkPermission($request, 'products.view', 'products.manage');
 
-        $query = Product::with(['category', 'primaryImage', 'images', 'variants'])->latest();
+        $query = Product::with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])->latest();
 
         if ($request->filled('search')) {
             $search = $request->input('search');
@@ -29,6 +29,14 @@ class AdminProductController extends Controller
 
         if ($request->filled('category_id')) {
             $query->where('category_id', $request->input('category_id'));
+        }
+
+        if ($request->filled('subcategory_id')) {
+            $query->where('subcategory_id', $request->input('subcategory_id'));
+        }
+
+        if ($request->filled('brand_id')) {
+            $query->where('brand_id', $request->input('brand_id'));
         }
 
         if ($request->filled('stock_status')) {
@@ -64,7 +72,7 @@ class AdminProductController extends Controller
     {
         $this->checkPermission($request, 'products.view', 'products.manage');
 
-        $product = Product::with(['category', 'images', 'variants', 'reviews'])->findOrFail($id);
+        $product = Product::with(['category', 'subcategory', 'brandRelation', 'images', 'variants', 'reviews'])->findOrFail($id);
         return response()->json($product);
     }
 
@@ -96,6 +104,8 @@ class AdminProductController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'category_id' => 'required|exists:categories,id',
+            'subcategory_id' => 'nullable|integer|exists:categories,id',
+            'brand_id' => 'nullable|integer|exists:brands,id',
             'brand' => 'nullable|string|max:255',
             'price' => 'required|numeric|min:0',
             'cost_price' => 'nullable|numeric|min:0',
@@ -168,6 +178,8 @@ class AdminProductController extends Controller
 
         $product = Product::create([
             'category_id' => $validated['category_id'],
+            'subcategory_id' => $validated['subcategory_id'] ?? null,
+            'brand_id' => $validated['brand_id'] ?? null,
             'name' => $validated['name'],
             'slug' => $slug,
             'brand' => $validated['brand'] ?? 'AETHER Studio',
@@ -267,6 +279,8 @@ class AdminProductController extends Controller
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'category_id' => 'sometimes|required|exists:categories,id',
+            'subcategory_id' => 'nullable|integer|exists:categories,id',
+            'brand_id' => 'nullable|integer|exists:brands,id',
             'brand' => 'nullable|string|max:255',
             'price' => 'sometimes|required|numeric|min:0',
             'cost_price' => 'nullable|numeric|min:0',
@@ -413,7 +427,7 @@ class AdminProductController extends Controller
 
         return response()->json([
             'message' => 'Product updated successfully',
-            'product' => $product->load(['category', 'primaryImage', 'images', 'variants']),
+            'product' => $product->load(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants']),
         ]);
     }
 

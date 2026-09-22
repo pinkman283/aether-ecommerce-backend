@@ -15,20 +15,22 @@ use Tests\TestCase;
 
 class InventoryFifoRemediationTest extends TestCase
 {
+    protected int $categoryId;
+
     protected function setUp(): void
     {
         parent::setUp();
-        Category::firstOrCreate(['id' => 1], [
+        $cat = Category::firstOrCreate(['slug' => 'general-audio'], [
             'name' => 'General Audio',
-            'slug' => 'general-audio',
             'description' => 'Test audio'
         ]);
+        $this->categoryId = $cat->id;
     }
 
     public function test_product_syncs_stock_from_variants(): void
     {
         $product = Product::create([
-            'category_id' => 1,
+            'category_id' => $this->categoryId,
             'name' => 'Test Variant Sync Keyboard',
             'slug' => 'test-sync-' . uniqid(),
             'sku' => 'SYNC-' . strtoupper(uniqid()),
@@ -58,7 +60,7 @@ class InventoryFifoRemediationTest extends TestCase
     public function test_fulfillment_consumes_fifo_layers_correctly(): void
     {
         $product = Product::create([
-            'category_id' => 1,
+            'category_id' => $this->categoryId,
             'name' => 'FIFO Earbuds',
             'slug' => 'fifo-earbuds-' . uniqid(),
             'sku' => 'FIFO-' . strtoupper(uniqid()),
@@ -130,7 +132,7 @@ class InventoryFifoRemediationTest extends TestCase
     public function test_fulfillment_halts_on_uncosted_inventory_without_fabricating_cost(): void
     {
         $product = Product::create([
-            'category_id' => 1,
+            'category_id' => $this->categoryId,
             'name' => 'Uncosted Mystery Hardware',
             'slug' => 'uncosted-' . uniqid(),
             'sku' => 'UNC-' . strtoupper(uniqid()),
@@ -172,7 +174,7 @@ class InventoryFifoRemediationTest extends TestCase
         $user = User::first() ?? User::factory()->create();
 
         $product = Product::create([
-            'category_id' => 1,
+            'category_id' => $this->categoryId,
             'name' => 'Adjustment Target Mouse',
             'slug' => 'adj-mouse-' . uniqid(),
             'sku' => 'MS-ADJ-' . strtoupper(uniqid()),
