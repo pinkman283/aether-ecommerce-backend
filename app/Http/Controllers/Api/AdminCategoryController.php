@@ -159,8 +159,9 @@ class AdminCategoryController extends Controller
         $category = Category::withCount('products')->findOrFail($id);
 
         if ($category->products_count > 0) {
+            $productCountText = $category->products_count === 1 ? '1 product assigned' : "{$category->products_count} products assigned";
             return response()->json([
-                'message' => "Cannot delete category '{$category->name}'. There are {$category->products_count} hardware products associated with it. Reassign or delete those products first.",
+                'message' => "Cannot delete category '{$category->name}' because there are {$productCountText} to it. Reassign or delete those products first.",
             ], 422);
         }
 
@@ -191,6 +192,7 @@ class AdminCategoryController extends Controller
 
         $deletedCount = 0;
         $skippedCount = 0;
+        $skippedNames = [];
 
         foreach ($validated['ids'] as $id) {
             $category = Category::withCount('products')->find($id);
@@ -198,6 +200,9 @@ class AdminCategoryController extends Controller
 
             if ($category->products_count > 0) {
                 $skippedCount++;
+                if (count($skippedNames) < 3) {
+                    $skippedNames[] = "'{$category->name}'";
+                }
                 continue;
             }
 
@@ -214,9 +219,15 @@ class AdminCategoryController extends Controller
             );
         }
 
-        $message = "Successfully deleted {$deletedCount} category/categories.";
-        if ($skippedCount > 0) {
-            $message .= " {$skippedCount} categories with assigned products were skipped.";
+        if ($deletedCount === 0 && $skippedCount > 0) {
+            $nameStr = !empty($skippedNames) ? ' (' . implode(', ', $skippedNames) . ')' : '';
+            $message = $skippedCount === 1
+                ? "Cannot delete category{$nameStr} because there are products assigned to it. Reassign or delete those products first."
+                : "Cannot delete {$skippedCount} categories because there are products assigned to them. Reassign or delete those products first.";
+        } elseif ($deletedCount > 0 && $skippedCount > 0) {
+            $message = "Deleted {$deletedCount} category/categories. Cannot delete {$skippedCount} category/categories because there are products assigned to them.";
+        } else {
+            $message = "Successfully deleted {$deletedCount} category/categories.";
         }
 
         return response()->json([

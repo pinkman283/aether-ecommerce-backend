@@ -18,6 +18,7 @@ use App\Services\PromotionEngine;
 use App\Services\StoreCreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class AdminOrderController extends Controller
@@ -417,37 +418,39 @@ class AdminOrderController extends Controller
         $orderNumber = $order->order_number;
         $oldValues = $order->toArray();
 
-        // If order was not already delivered/cancelled, restore stock, reverse accounting & promotions
-        if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
-            $this->restoreOrderInventory($order, 'archival');
-            AccountingService::postOrderCancellation($order);
-            PromotionEngine::reverseOrderRedemptions($order, "Order archived/deleted by {$request->user()->name}");
-        }
+        DB::transaction(function () use ($order, $request, $id, $orderNumber, $oldValues) {
+            // If order was not already delivered/cancelled, restore stock, reverse accounting & promotions
+            if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
+                $this->restoreOrderInventory($order, 'archival');
+                AccountingService::postOrderCancellation($order);
+                PromotionEngine::reverseOrderRedemptions($order, "Order archived/deleted by {$request->user()->name}");
+            }
 
-        OrderTimelineService::recordEvent(
-            order: $order,
-            eventType: 'cancelled',
-            title: 'Order Archived / Soft-Deleted',
-            description: "Order was safely archived by {$request->user()->name}. Financial history preserved.",
-            actorName: $request->user()->name,
-            iconType: 'x'
-        );
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'cancelled',
+                title: 'Order Archived / Soft-Deleted',
+                description: "Order was safely archived by {$request->user()->name}. Financial history preserved.",
+                actorName: $request->user()->name,
+                iconType: 'x'
+            );
 
-        $order->items()->delete();
-        $order->delete(); // Soft delete preserves foreign keys and journal entries
+            $order->items()->delete();
+            $order->delete(); // Soft delete preserves foreign keys and journal entries
 
-        AuditLog::log(
-            $request->user(),
-            'order.deleted',
-            'Order',
-            $id,
-            "Archived (soft-deleted) order #{$orderNumber}.",
-            $oldValues,
-            null
-        );
+            AuditLog::log(
+                $request->user(),
+                'order.deleted',
+                'Order',
+                $id,
+                "Archived (soft-deleted) order #{$orderNumber}.",
+                $oldValues,
+                null
+            );
+        });
 
         return response()->json([
-            'message' => "Order #{$orderNumber} archived successfully.",
+            'message' => "Order #{$orderNumber} deleted successfully.",
         ]);
     }
 
@@ -488,21 +491,32 @@ class AdminOrderController extends Controller
 
         $validated = $request->validate([
             'ids' => 'required|array|min:1',
-            'ids.*' => 'integer|exists:orders,id',
+            'ids.*' => 'integer',
         ]);
 
         $count = 0;
 
-        foreach ($validated['ids'] as $id) {
-            $order = Order::with('items')->find($id);
-            if ($order) {
+        DB::transaction(function () use ($validated, $request, &$count) {
+            $orders = Order::with('items')->whereIn('id', $validated['ids'])->get();
+
+            foreach ($orders as $order) {
                 $orderNumber = $order->order_number;
                 $oldValues = $order->toArray();
 
                 if (!in_array($order->order_status, ['cancelled', 'refunded', 'returned', 'delivered'])) {
                     $this->restoreOrderInventory($order, 'bulk_archival');
                     AccountingService::postOrderCancellation($order);
+                    PromotionEngine::reverseOrderRedemptions($order, "Bulk archived by {$request->user()->name}");
                 }
+
+                OrderTimelineService::recordEvent(
+                    order: $order,
+                    eventType: 'cancelled',
+                    title: 'Order Archived / Soft-Deleted',
+                    description: "Order was safely archived by {$request->user()->name}.",
+                    actorName: $request->user()->name,
+                    iconType: 'x'
+                );
 
                 $order->items()->delete();
                 $order->delete(); // Soft delete
@@ -512,16 +526,16 @@ class AdminOrderController extends Controller
                     $request->user(),
                     'order.deleted',
                     'Order',
-                    $id,
+                    $order->id,
                     "Bulk archived order #{$orderNumber}.",
                     $oldValues,
                     null
                 );
             }
-        }
+        });
 
         return response()->json([
-            'message' => "Successfully archived {$count} order(s).",
+            'message' => "Successfully deleted {$count} order(s).",
             'deleted_count' => $count,
         ]);
     }

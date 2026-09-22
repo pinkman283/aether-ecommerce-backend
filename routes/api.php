@@ -317,6 +317,8 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::post('/returns/{id}/receive', [AdminReturnController::class, 'receive']);
     Route::post('/returns/{id}/qc', [AdminReturnController::class, 'qc']);
     Route::post('/returns/{id}/refund', [AdminReturnController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
+    Route::delete('/returns/{id}', [AdminReturnController::class, 'destroy']);
+    Route::post('/returns/bulk-delete', [AdminReturnController::class, 'bulkDestroy']);
 
     // Commercial Sales History & Invoices
     Route::get('/sales', [AdminSalesController::class, 'index']);

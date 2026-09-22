@@ -9,6 +9,7 @@ use App\Models\OrderReturn;
 use App\Services\OrderReturnService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
 class AdminReturnController extends Controller
@@ -312,6 +313,78 @@ class AdminReturnController extends Controller
             'status' => 'success',
             'message' => "Refund of ৳{$orderReturn->refund_amount} processed and posted to ledger.",
             'data' => $orderReturn,
+        ]);
+    }
+
+    /**
+     * Delete a single return record.
+     */
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        $orderReturn = OrderReturn::with('items')->findOrFail($id);
+        $returnNumber = $orderReturn->return_number;
+        $oldValues = $orderReturn->toArray();
+
+        DB::transaction(function () use ($orderReturn, $request, $id, $returnNumber, $oldValues) {
+            $orderReturn->items()->delete();
+            $orderReturn->delete();
+
+            AuditLog::log(
+                $request->user(),
+                'order.return_deleted',
+                'OrderReturn',
+                $id,
+                "Deleted return #{$returnNumber}",
+                $oldValues,
+                null
+            );
+        });
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Return #{$returnNumber} deleted successfully.",
+        ]);
+    }
+
+    /**
+     * Bulk delete return records.
+     */
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer',
+        ]);
+
+        $count = 0;
+
+        DB::transaction(function () use ($validated, $request, &$count) {
+            $returns = OrderReturn::with('items')->whereIn('id', $validated['ids'])->get();
+
+            foreach ($returns as $orderReturn) {
+                $returnNumber = $orderReturn->return_number;
+                $oldValues = $orderReturn->toArray();
+
+                $orderReturn->items()->delete();
+                $orderReturn->delete();
+                $count++;
+
+                AuditLog::log(
+                    $request->user(),
+                    'order.return_deleted',
+                    'OrderReturn',
+                    $orderReturn->id,
+                    "Bulk deleted return #{$returnNumber}",
+                    $oldValues,
+                    null
+                );
+            }
+        });
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Successfully deleted {$count} return(s).",
+            'deleted_count' => $count,
         ]);
     }
 }

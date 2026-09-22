@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Models\Category;
 use App\Models\Product;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -47,7 +48,16 @@ class AdminProductController extends Controller
         $perPage = (int) $request->input('per_page', 15);
         $products = $query->paginate($perPage);
 
-        return response()->json($products);
+        $response = $products->toArray();
+        $response['stats'] = [
+            'total_products' => Product::count(),
+            'total_warehouse_units' => (int) Product::sum('stock_quantity'),
+            'total_categories' => Category::count(),
+            'low_stock_count' => Product::where('stock_quantity', '>', 0)->where('stock_quantity', '<=', 10)->count(),
+            'out_of_stock_count' => Product::where('stock_quantity', '<=', 0)->count(),
+        ];
+
+        return response()->json($response);
     }
 
     public function show(Request $request, int $id): JsonResponse
