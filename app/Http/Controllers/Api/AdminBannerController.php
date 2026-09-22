@@ -265,11 +265,18 @@ class AdminBannerController extends Controller
         $this->checkPermission($request, 'theme.manage');
 
         $request->validate([
-            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif|max:10240',
+            'image' => 'required|file|image|mimes:jpeg,png,jpg,webp,gif,avif,jfif|max:10240',
+        ], [
+            'image.uploaded' => 'The image failed to upload. The file may exceed the server upload limit (' . ini_get('upload_max_filesize') . '). Please choose a smaller image.',
+            'image.image' => 'The uploaded file must be a valid image (JPEG, PNG, WebP, GIF, AVIF).',
+            'image.mimes' => 'The image must be a file of type: jpeg, png, jpg, webp, gif, avif.',
+            'image.max' => 'The image size cannot exceed 10MB.',
+            'image.required' => 'An image file is required for upload.',
         ]);
 
         $file = $request->file('image');
-        $filename = 'banner_' . Str::random(16) . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $ext = $file->getClientOriginalExtension() ?: ($file->guessExtension() ?: 'jpg');
+        $filename = 'banner_' . Str::random(16) . '_' . time() . '.' . strtolower($ext);
         $path = $file->storeAs('banners', $filename, 'public');
         $fullUrl = url('storage/' . $path);
 
