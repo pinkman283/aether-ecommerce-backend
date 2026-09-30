@@ -55,11 +55,15 @@ class Category extends Model
     protected static function booted(): void
     {
         static::saved(function () {
-            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+            \Illuminate\Support\Facades\DB::afterCommit(function () {
+                \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+            });
         });
 
         static::deleted(function () {
-            \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+            \Illuminate\Support\Facades\DB::afterCommit(function () {
+                \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
+            });
         });
     }
 

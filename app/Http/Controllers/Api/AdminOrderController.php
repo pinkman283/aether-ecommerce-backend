@@ -23,6 +23,40 @@ use Illuminate\Support\Str;
 
 class AdminOrderController extends Controller
 {
+    /**
+     * Authoritative state transition matrix.
+     * Prevents invalid or nonsensical status jumps (e.g., delivered -> pending, cancelled -> shipped).
+     */
+    public const VALID_TRANSITIONS = [
+        'pending' => ['confirmed', 'processing', 'cancelled'],
+        'confirmed' => ['processing', 'shipped', 'cancelled'],
+        'processing' => ['shipped', 'cancelled'],
+        'shipped' => ['delivered', 'cancelled', 'refunded'],
+        'delivered' => ['refunded'],
+        'cancelled' => [],
+        'refunded' => [],
+    ];
+
+    public function counts(Request $request): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.view', 'orders.manage');
+
+        $counts = [
+            'all' => Order::count(),
+            'pending' => Order::where('order_status', 'pending')->count(),
+            'confirmed' => Order::where('order_status', 'confirmed')->count(),
+            'processing' => Order::where('order_status', 'processing')->count(),
+            'shipped' => Order::where('order_status', 'shipped')->count(),
+            'delivered' => Order::where('order_status', 'delivered')->count(),
+            'cancelled' => Order::where('order_status', 'cancelled')->count(),
+            'refunded' => Order::where('order_status', 'refunded')->count(),
+            'payment_pending' => Order::where('payment_status', 'pending')->count(),
+            'payment_paid' => Order::where('payment_status', 'paid')->count(),
+        ];
+
+        return response()->json($counts);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
@@ -36,7 +70,7 @@ class AdminOrderController extends Controller
             'latestShipment',
             'shipments',
             'latestReturn',
-        ])->latest();
+        ]);
 
         if ($request->filled('source') && $request->input('source') !== 'all') {
             $query->where('order_source', $request->input('source'));
@@ -62,6 +96,10 @@ class AdminOrderController extends Controller
             $query->where('payment_status', $request->input('payment_status'));
         }
 
+        if ($request->filled('payment_method') && $request->input('payment_method') !== 'all') {
+            $query->where('payment_method', $request->input('payment_method'));
+        }
+
         if ($request->filled('carrier')) {
             $query->where('carrier', 'like', "%" . $request->input('carrier') . "%");
         }
@@ -82,6 +120,15 @@ class AdminOrderController extends Controller
             $query->whereDate('created_at', '<=', $request->input('date_to'));
         }
 
+        $sortBy = $request->input('sort_by', 'created_at');
+        $sortOrder = strtolower($request->input('sort_order', 'desc')) === 'asc' ? 'asc' : 'desc';
+        $allowedSorts = ['id', 'order_number', 'created_at', 'total_amount', 'order_status', 'payment_status', 'customer_name'];
+        if (in_array($sortBy, $allowedSorts)) {
+            $query->orderBy($sortBy, $sortOrder);
+        } else {
+            $query->latest();
+        }
+
         $perPage = (int) $request->input('per_page', 25);
         $orders = $query->paginate($perPage);
 
@@ -92,7 +139,18 @@ class AdminOrderController extends Controller
     {
         $this->checkPermission($request, 'orders.view', 'orders.manage');
 
-        $order = Order::with(['items.product', 'items.variant', 'user', 'shipments', 'latestShipment'])->findOrFail($id);
+        $order = Order::with([
+            'items.product',
+            'items.variant',
+            'user',
+            'shipments',
+            'latestShipment',
+            'returns',
+            'latestReturn',
+            'timelineEvents',
+            'payments',
+        ])->findOrFail($id);
+
         return response()->json($order);
     }
 
@@ -285,31 +343,87 @@ class AdminOrderController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $this->checkPermission($request, 'orders.manage');
+
         $order = Order::with('items')->findOrFail($id);
         $oldValues = $order->toArray();
+        $oldStatus = $order->order_status;
+        $oldPaymentStatus = $order->payment_status;
 
         $validated = $request->validate([
             'customer_name' => 'sometimes|required|string|max:255',
             'customer_email' => 'sometimes|required|email|max:255',
             'customer_phone' => 'nullable|string|max:30',
-            'shipping_address' => 'nullable|array',
-            'order_status' => 'sometimes|required|in:pending,processing,shipped,delivered,cancelled,refunded',
+            'order_status' => 'sometimes|required|in:pending,confirmed,processing,shipped,delivered,cancelled,refunded',
             'payment_status' => 'sometimes|required|in:pending,paid,failed,refunded',
             'carrier' => 'nullable|string|max:100',
             'tracking_code' => 'nullable|string|max:100',
             'notes' => 'nullable|string',
             'shipping_address' => 'nullable|array',
             'billing_address' => 'nullable|array',
-            'customer_name' => 'sometimes|required|string|max:255',
-            'customer_email' => 'sometimes|required|email|max:255',
-            'customer_phone' => 'nullable|string|max:30',
         ]);
 
-        if (isset($validated['order_status']) && $validated['order_status'] === 'shipped' && !$order->shipped_at) {
-            $validated['shipped_at'] = now();
+        // State machine transition validation
+        if (isset($validated['order_status']) && $validated['order_status'] !== $oldStatus) {
+            $newStatus = $validated['order_status'];
+            $allowedNext = self::VALID_TRANSITIONS[$oldStatus] ?? [];
+            if (!in_array($newStatus, $allowedNext)) {
+                return response()->json([
+                    'message' => "Invalid order status transition from '{$oldStatus}' to '{$newStatus}'.",
+                    'errors' => [
+                        'order_status' => ["Cannot transition order from '{$oldStatus}' to '{$newStatus}'."]
+                    ]
+                ], 422);
+            }
+
+            if ($newStatus === 'shipped' && !$order->shipped_at) {
+                $validated['shipped_at'] = now();
+            }
+            if ($newStatus === 'delivered' && !$order->delivered_at) {
+                $validated['delivered_at'] = now();
+            }
+
+            if ($newStatus === 'cancelled' && $oldStatus !== 'cancelled') {
+                $this->restoreOrderInventory($order, 'cancellation');
+                AccountingService::postOrderCancellation($order);
+                PromotionEngine::reverseOrderRedemptions($order, "Order cancelled by {$request->user()->name}");
+                OrderTimelineService::recordEvent(
+                    order: $order,
+                    eventType: 'cancelled',
+                    title: 'Order Cancelled',
+                    description: "Order marked as cancelled by {$request->user()->name}. Inventory, promotions, and accounting reversed.",
+                    actorName: $request->user()->name,
+                    iconType: 'x'
+                );
+            }
         }
-        if (isset($validated['order_status']) && $validated['order_status'] === 'delivered' && !$order->delivered_at) {
-            $validated['delivered_at'] = now();
+
+        // Payment status rule validation
+        if (isset($validated['payment_status']) && $validated['payment_status'] !== $oldPaymentStatus) {
+            $newPaymentStatus = $validated['payment_status'];
+            if ($newPaymentStatus === 'paid') {
+                $isCod = in_array(strtolower($order->payment_method), ['cash_on_delivery', 'cod', 'cash', 'pos_cash']);
+                if (!$isCod) {
+                    return response()->json([
+                        'message' => 'Online payment cannot be marked as paid without verified provider confirmation.',
+                        'errors' => [
+                            'payment_status' => ['Online payment orders require verified gateway provider confirmation.']
+                        ]
+                    ], 422);
+                }
+
+                $order->recordPayment(
+                    amount: (float) $order->total_amount,
+                    paymentMethod: 'cash_on_delivery',
+                    type: 'collection',
+                    provider: 'manual',
+                    transactionId: null,
+                    notes: "Cash on delivery marked collected by " . $request->user()->name,
+                    userId: $request->user()->id,
+                    status: 'completed'
+                );
+                unset($validated['payment_status']);
+            }
         }
 
         $order->fill($validated);
@@ -330,7 +444,7 @@ class AdminOrderController extends Controller
 
         return response()->json([
             'message' => "Order #{$order->order_number} updated successfully.",
-            'order' => $order->fresh(['items.product', 'user']),
+            'order' => $order->fresh(['items.product', 'user', 'payments', 'shipments']),
         ]);
     }
 
@@ -340,9 +454,10 @@ class AdminOrderController extends Controller
 
         $order = Order::with('items')->findOrFail($id);
         $oldStatus = $order->order_status;
+        $oldPaymentStatus = $order->payment_status;
 
         $validated = $request->validate([
-            'order_status' => 'required|in:pending,processing,shipped,delivered,cancelled,refunded',
+            'order_status' => 'required|in:pending,confirmed,processing,shipped,delivered,cancelled,refunded',
             'carrier' => 'nullable|string|max:100',
             'tracking_code' => 'nullable|string|max:100',
             'payment_status' => 'nullable|in:pending,paid,failed,refunded',
@@ -350,6 +465,50 @@ class AdminOrderController extends Controller
         ]);
 
         $newStatus = $validated['order_status'];
+
+        // Validate state transition if status is changing
+        if ($newStatus !== $oldStatus) {
+            $allowedNext = self::VALID_TRANSITIONS[$oldStatus] ?? [];
+            if (!in_array($newStatus, $allowedNext)) {
+                return response()->json([
+                    'message' => "Invalid order status transition from '{$oldStatus}' to '{$newStatus}'.",
+                    'errors' => [
+                        'order_status' => ["Cannot transition order from '{$oldStatus}' to '{$newStatus}'."]
+                    ]
+                ], 422);
+            }
+        }
+
+        // Validate payment status changes if passed
+        if (isset($validated['payment_status']) && $validated['payment_status'] !== $oldPaymentStatus) {
+            $newPaymentStatus = $validated['payment_status'];
+
+            if ($newPaymentStatus === 'paid') {
+                $isCod = in_array(strtolower($order->payment_method), ['cash_on_delivery', 'cod', 'cash', 'pos_cash']);
+                if (!$isCod) {
+                    return response()->json([
+                        'message' => 'Online payment cannot be marked as paid without verified provider confirmation.',
+                        'errors' => [
+                            'payment_status' => ['Online payment orders require verified gateway provider confirmation.']
+                        ]
+                    ], 422);
+                }
+
+                // For COD, record payment ledger entry
+                $order->recordPayment(
+                    amount: (float) $order->total_amount,
+                    paymentMethod: 'cash_on_delivery',
+                    type: 'collection',
+                    provider: 'manual',
+                    transactionId: null,
+                    notes: "Cash on delivery marked collected by " . $request->user()->name,
+                    userId: $request->user()->id,
+                    status: 'completed'
+                );
+            } else {
+                $order->update(['payment_status' => $newPaymentStatus]);
+            }
+        }
 
         // Handle timestamps
         if ($newStatus === 'shipped' && !$order->shipped_at) {
@@ -392,7 +551,12 @@ class AdminOrderController extends Controller
             );
         }
 
-        $order->update($validated);
+        $order->update([
+            'order_status' => $newStatus,
+            'carrier' => $validated['carrier'] ?? $order->carrier,
+            'tracking_code' => $validated['tracking_code'] ?? $order->tracking_code,
+            'notes' => $validated['notes'] ?? $order->notes,
+        ]);
 
         AuditLog::log(
             $request->user(),
@@ -400,13 +564,79 @@ class AdminOrderController extends Controller
             'Order',
             $order->id,
             "Order {$order->order_number} fulfillment status updated from '{$oldStatus}' to '{$newStatus}'.",
-            ['status' => $oldStatus],
-            ['status' => $newStatus, 'carrier' => $order->carrier, 'tracking_code' => $order->tracking_code]
+            ['status' => $oldStatus, 'payment_status' => $oldPaymentStatus],
+            ['status' => $newStatus, 'payment_status' => $order->payment_status, 'carrier' => $order->carrier, 'tracking_code' => $order->tracking_code]
         );
 
         return response()->json([
             'message' => "Order {$order->order_number} status updated to '{$newStatus}'.",
-            'order' => $order->fresh(['items', 'user']),
+            'order' => $order->fresh(['items', 'user', 'payments', 'shipments']),
+        ]);
+    }
+
+    /**
+     * Record cash on delivery collection or manual payment.
+     */
+    public function recordPayment(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'orders.manage');
+
+        $order = Order::findOrFail($id);
+
+        $validated = $request->validate([
+            'amount' => 'nullable|numeric|min:0.01',
+            'notes' => 'nullable|string|max:500',
+        ]);
+
+        $isCod = in_array(strtolower($order->payment_method), ['cash_on_delivery', 'cod', 'cash', 'pos_cash']);
+        if (!$isCod) {
+            return response()->json([
+                'message' => 'Online payment cannot be manually marked as paid without gateway verification.',
+                'errors' => [
+                    'payment_method' => ['Online payment orders require verified gateway provider confirmation.']
+                ]
+            ], 422);
+        }
+
+        $amount = (float) ($validated['amount'] ?? $order->outstanding_balance);
+        if ($amount <= 0) {
+            $amount = (float) $order->total_amount;
+        }
+
+        $payment = $order->recordPayment(
+            amount: $amount,
+            paymentMethod: 'cash_on_delivery',
+            type: 'collection',
+            provider: 'manual',
+            transactionId: null,
+            notes: $validated['notes'] ?? ("COD collection recorded by " . $request->user()->name),
+            userId: $request->user()->id,
+            status: 'completed'
+        );
+
+        AuditLog::log(
+            $request->user(),
+            'order.payment_recorded',
+            'Order',
+            $order->id,
+            "Recorded COD payment of ৳{$amount} for Order #{$order->order_number}.",
+            null,
+            $payment->toArray()
+        );
+
+        OrderTimelineService::recordEvent(
+            order: $order,
+            eventType: 'accounting_adjusted',
+            title: "Payment Collected (৳" . number_format($amount, 2) . ")",
+            description: "Cash on delivery payment of ৳" . number_format($amount, 2) . " received and verified by {$request->user()->name}.",
+            actorName: $request->user()->name,
+            iconType: 'dollar'
+        );
+
+        return response()->json([
+            'message' => "Payment of ৳{$amount} recorded successfully for Order #{$order->order_number}.",
+            'payment' => $payment,
+            'order' => $order->fresh(['items', 'user', 'payments', 'shipments']),
         ]);
     }
 

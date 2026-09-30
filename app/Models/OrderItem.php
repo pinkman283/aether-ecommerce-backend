@@ -31,6 +31,12 @@ class OrderItem extends Model
         'gross_profit',
     ];
 
+    protected $hidden = [
+        'cogs_unit_cost',
+        'cogs_total',
+        'gross_profit',
+    ];
+
     protected $casts = [
         'unit_price' => 'float',
         'cogs_unit_cost' => 'float',

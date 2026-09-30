@@ -48,6 +48,9 @@ class AdminCustomerController extends Controller
 
         $perPage = (int) $request->input('per_page', 25);
         $customers = $query->paginate($perPage);
+        $customers->through(fn($c) => $c->makeVisible([
+            'risk_score', 'risk_level', 'risk_reasons', 'internal_notes', 'failed_login_attempts', 'locked_until', 'suspended_until', 'suspension_reason'
+        ]));
 
         return response()->json($customers);
     }
@@ -68,6 +71,10 @@ class AdminCustomerController extends Controller
                 $q->where('payment_status', 'paid');
             }], 'total_amount')
             ->findOrFail($id);
+
+        $customer->makeVisible([
+            'risk_score', 'risk_level', 'risk_reasons', 'internal_notes', 'failed_login_attempts', 'locked_until', 'suspended_until', 'suspension_reason'
+        ]);
 
         // Compute Live Risk Intelligence & Multi-IP History
         $riskData = CustomerRiskService::calculateCustomerRisk($customer);

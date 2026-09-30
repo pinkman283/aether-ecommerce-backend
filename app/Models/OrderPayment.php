@@ -43,12 +43,14 @@ class OrderPayment extends Model
     }
 
     /**
-     * Generate unique payment number: PAY-YYYYMMDD-XXXX
+     * Generate unique payment number: PAY-YYYYMMDD-XXXXXX
      */
     public static function generatePaymentNumber(): string
     {
-        $datePrefix = 'PAY-' . now()->format('Ymd');
-        $count = self::where('payment_number', 'LIKE', "{$datePrefix}-%")->count();
-        return sprintf('%s-%04d', $datePrefix, $count + 1);
+        do {
+            $number = 'PAY-' . now()->format('Ymd') . '-' . strtoupper(\Illuminate\Support\Str::random(6));
+        } while (self::where('payment_number', $number)->exists());
+
+        return $number;
     }
 }

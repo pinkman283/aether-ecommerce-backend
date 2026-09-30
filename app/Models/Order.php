@@ -57,6 +57,14 @@ class Order extends Model
         'delivered_at',
     ];
 
+    protected $hidden = [
+        'cogs_amount',
+        'gross_profit',
+        'pos_register_session_id',
+        'cashier_user_id',
+        'ip_address',
+    ];
+
     protected function casts(): array
     {
         return [

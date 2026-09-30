@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\ProductCategoryResource;
+use App\Http\Resources\ProductResource;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\Setting;
@@ -13,7 +15,7 @@ class ProductController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Product::with(['category', 'primaryImage', 'images', 'variants'])
+        $query = Product::with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
             ->active();
 
         // Filter by category slug(s) or ID(s) (including all recursive subcategories)
@@ -63,15 +65,27 @@ class ProductController extends Controller
             }
         }
 
-        // Search query
+        // Search query: supports product name, brand, short_description, description, product SKU, variant SKU, category, and subcategory
         if ($request->filled('search')) {
-            $search = $request->input('search');
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('brand', 'like', "%{$search}%")
-                    ->orWhere('short_description', 'like', "%{$search}%")
-                    ->orWhere('description', 'like', "%{$search}%");
-            });
+            $search = trim((string) $request->input('search'));
+            if ($search !== '') {
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('brand', 'like', "%{$search}%")
+                        ->orWhere('short_description', 'like', "%{$search}%")
+                        ->orWhere('description', 'like', "%{$search}%")
+                        ->orWhere('sku', 'like', "%{$search}%")
+                        ->orWhereHas('variants', function ($vq) use ($search) {
+                            $vq->where('sku', 'like', "%{$search}%");
+                        })
+                        ->orWhereHas('category', function ($cq) use ($search) {
+                            $cq->where('name', 'like', "%{$search}%");
+                        })
+                        ->orWhereHas('subcategory', function ($scq) use ($search) {
+                            $scq->where('name', 'like', "%{$search}%");
+                        });
+                });
+            }
         }
 
         // Price range
@@ -128,14 +142,27 @@ class ProductController extends Controller
         $perPage = min((int) $request->input('per_page', 12), 50);
         $products = $query->paginate($perPage);
 
-        return response()->json($products);
+        return response()->json([
+            'data' => ProductResource::collection($products->items())->resolve(),
+            'current_page' => $products->currentPage(),
+            'last_page' => $products->lastPage(),
+            'per_page' => $products->perPage(),
+            'total' => $products->total(),
+            'from' => $products->firstItem(),
+            'to' => $products->lastItem(),
+            'first_page_url' => $products->url(1),
+            'last_page_url' => $products->url($products->lastPage()),
+            'next_page_url' => $products->nextPageUrl(),
+            'prev_page_url' => $products->previousPageUrl(),
+            'path' => $products->path(),
+        ]);
     }
 
     public function show(string $slug): JsonResponse
     {
         $product = Product::where('slug', $slug)
             ->orWhere('id', $slug)
-            ->with(['category', 'images', 'variants', 'reviews'])
+            ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants', 'reviews'])
             ->firstOrFail();
 
         $reviewsSetting = Setting::where('key', 'reviews_enabled')->first();
@@ -147,14 +174,14 @@ class ProductController extends Controller
         // Get related products from the same category
         $relatedProducts = Product::where('category_id', $product->category_id)
             ->where('id', '!=', $product->id)
-            ->with(['primaryImage', 'variants'])
+            ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
             ->active()
             ->take(4)
             ->get();
 
         return response()->json([
-            'product' => $product,
-            'related' => $relatedProducts,
+            'product' => (new ProductResource($product))->resolve(),
+            'related' => ProductResource::collection($relatedProducts)->resolve(),
         ]);
     }
 
@@ -162,17 +189,17 @@ class ProductController extends Controller
     {
         $data = \Illuminate\Support\Facades\Cache::remember('api_storefront_featured_payload', 60, function () {
             $featuredProducts = Product::featured()
-                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
                 ->take(8)
                 ->get();
 
             $newArrivals = Product::newArrivals()
-                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
                 ->take(6)
                 ->get();
 
             $bestSellers = Product::bestSellers()
-                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
                 ->take(6)
                 ->get();
 
@@ -190,13 +217,14 @@ class ProductController extends Controller
             }
 
             return [
-                'featured_products' => $featuredProducts->values()->all(),
-                'new_arrivals' => $newArrivals->values()->all(),
-                'best_sellers' => $bestSellers->values()->all(),
-                'featured_categories' => $featuredCategories->values()->all(),
+                'featured_products' => ProductResource::collection($featuredProducts)->resolve(),
+                'new_arrivals' => ProductResource::collection($newArrivals)->resolve(),
+                'best_sellers' => ProductResource::collection($bestSellers)->resolve(),
+                'featured_categories' => ProductCategoryResource::collection($featuredCategories)->resolve(),
             ];
         });
 
         return response()->json($data);
     }
 }
+

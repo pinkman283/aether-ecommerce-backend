@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class Brand extends Model
 {
@@ -28,6 +30,21 @@ class Brand extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        static::saved(function () {
+            DB::afterCommit(function () {
+                Cache::forget('storefront_header_navigation');
+            });
+        });
+
+        static::deleted(function () {
+            DB::afterCommit(function () {
+                Cache::forget('storefront_header_navigation');
+            });
+        });
+    }
+
     public function products(): HasMany
     {
         return $this->hasMany(Product::class, 'brand_id');
@@ -45,4 +62,3 @@ class Brand extends Model
             ->withTimestamps();
     }
 }
-

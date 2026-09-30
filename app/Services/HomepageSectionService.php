@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Resources\ProductResource;
 use App\Models\HomepageSection;
 use App\Models\Product;
 use Illuminate\Support\Collection;
@@ -117,17 +118,17 @@ class HomepageSectionService
             }
 
             $placeholders = implode(',', $ids);
-            return Product::whereIn('id', $ids)
+            $results = Product::whereIn('id', $ids)
                 ->active()
-                ->with(['category', 'primaryImage', 'images', 'variants'])
+                ->with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
                 ->orderByRaw("FIELD(id, {$placeholders})")
                 ->take($limit)
-                ->get()
-                ->toArray();
+                ->get();
+            return ProductResource::collection($results)->resolve();
         }
 
         // 2. Query Builder Base
-        $query = Product::with(['category', 'primaryImage', 'images', 'variants'])
+        $query = Product::with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
             ->active();
 
         // Filter by Category
@@ -169,7 +170,7 @@ class HomepageSectionService
         // backfill with other active products from the same category/brand so the showcase is never bare
         if ($results->count() < 4 && ($sortBy === 'featured' || $sortBy === 'best_selling')) {
             $existingIds = $results->pluck('id')->toArray();
-            $fillQuery = Product::with(['category', 'primaryImage', 'images', 'variants'])
+            $fillQuery = Product::with(['category', 'subcategory', 'brandRelation', 'primaryImage', 'images', 'variants'])
                 ->active()
                 ->whereNotIn('id', $existingIds);
 
@@ -186,6 +187,6 @@ class HomepageSectionService
             }
         }
 
-        return $results->toArray();
+        return ProductResource::collection($results)->resolve();
     }
 }

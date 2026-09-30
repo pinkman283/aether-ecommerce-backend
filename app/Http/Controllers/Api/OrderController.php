@@ -9,7 +9,11 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use App\Services\AccountingService;
 use App\Services\IdempotencyService;
+use App\Services\OrderReturnService;
+use App\Services\OrderTimelineService;
+use App\Services\Payment\PaymentManager;
 use App\Services\PromotionEngine;
 use App\Services\ShippingZoneResolver;
 use App\Services\StoreCreditService;
@@ -41,16 +45,18 @@ class OrderController extends Controller
     {
         $user = auth('sanctum')->user() ?? $request->user();
 
-        $order = Order::where(function ($q) use ($orderNumber) {
-            $q->where('order_number', $orderNumber)
-              ->orWhere('id', $orderNumber);
-        })->with(['items', 'user'])->firstOrFail();
+        $order = Order::where('order_number', $orderNumber)
+            ->with(['items', 'user'])
+            ->firstOrFail();
 
-        // If order is tied to a user account, ensure only the owner or staff gets the full user profile details
-        if ($order->user_id && $user && $order->user_id !== $user->id && !$user->isStaffOrAdmin()) {
-            return response()->json([
-                'message' => 'Access Denied: You do not have authorization to view this customer order.',
-            ], 403);
+        // Strictly protect customer privacy: if order belongs to a registered customer account,
+        // it can only be accessed by that customer or staff/admin.
+        if ($order->user_id) {
+            if (!$user || ($order->user_id !== $user->id && !$user->isStaffOrAdmin())) {
+                return response()->json([
+                    'message' => 'Access Denied: You do not have authorization to view this customer order.',
+                ], 403);
+            }
         }
 
         return response()->json($order);
@@ -130,7 +136,22 @@ class OrderController extends Controller
                 'shipping_city_id' => 'nullable|integer',
                 'shipping_zone_id' => 'nullable|integer',
                 'shipping_area_id' => 'nullable|integer',
-                'payment_method' => 'required|in:cash_on_delivery,cod',
+                'payment_method' => [
+                    'required',
+                    'string',
+                    'max:50',
+                    function ($attribute, $value, $fail) {
+                        $paymentManager = app(PaymentManager::class);
+                        if (!$paymentManager->isKnownMethod($value)) {
+                            $fail('The selected payment method is invalid.');
+                            return;
+                        }
+                        $provider = $paymentManager->driver($value);
+                        if (!$provider->isConfigured()) {
+                            $fail('Online payment is currently unavailable.');
+                        }
+                    },
+                ],
                 'shipping_method' => 'required|string|max:100',
                 'coupon_code' => 'nullable|string',
                 'claimed_coupon_id' => 'nullable|integer',
@@ -143,6 +164,12 @@ class OrderController extends Controller
             ], [
                 'shipping_method.required' => 'Please select a delivery area.',
             ]);
+
+            // Resolve authoritative payment provider and canonical method name
+            $paymentManager = app(PaymentManager::class);
+            $paymentProvider = $paymentManager->driver($validated['payment_method']);
+            $canonicalPaymentMethod = $paymentManager->normalizePaymentMethod($validated['payment_method']);
+            $validated['payment_method'] = $canonicalPaymentMethod;
 
             // Ensure address defaults
             $shippingAddress = $validated['shipping_address'];
@@ -178,7 +205,7 @@ class OrderController extends Controller
                 }
             }
 
-            $result = DB::transaction(function () use ($request, $validated, $customerRecord, $clientIp) {
+            $result = DB::transaction(function () use ($request, $validated, $customerRecord, $clientIp, $paymentProvider, $canonicalPaymentMethod) {
                 $subtotal = 0.00;
                 $itemsToCreate = [];
 
@@ -304,7 +331,7 @@ class OrderController extends Controller
                     'store_credit_amount' => 0.00,
                     'total_amount' => $total,
                     'payment_status' => 'pending',
-                    'payment_method' => 'cash_on_delivery',
+                    'payment_method' => $canonicalPaymentMethod,
                     'payment_transaction_id' => null,
                     'order_status' => 'pending',
                     'tracking_code' => null,
@@ -314,6 +341,14 @@ class OrderController extends Controller
                     'promotion_discount_details' => $eval['applied_promotions'],
                     'ip_address' => $clientIp,
                 ]);
+
+                // Authoritative Payment Registration via PaymentProvider
+                $paymentResult = $paymentProvider->initiatePayment($order);
+                if (!$paymentResult->success) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'payment_method' => [$paymentResult->message ?: 'Failed to initialize payment.'],
+                    ]);
+                }
 
                 // If customer requested store credit application, deduct atomically
                 if (!empty($validated['use_store_credit'])) {
@@ -427,6 +462,132 @@ class OrderController extends Controller
     {
         $zones = ShippingZoneResolver::getConfiguredZones();
         return response()->json(['zones' => $zones]);
+    }
+
+    /**
+     * Public API endpoint to get available payment methods
+     */
+    public function paymentMethods(PaymentManager $paymentManager): JsonResponse
+    {
+        return response()->json([
+            'payment_methods' => $paymentManager->getPublicPaymentMethods(),
+        ]);
+    }
+
+    /**
+     * Customer self-service order cancellation.
+     * Respects order state machine: only allowed when order is 'pending'.
+     */
+    public function cancel(Request $request, string $orderNumber): JsonResponse
+    {
+        $user = $request->user();
+
+        $order = Order::where('order_number', $orderNumber)
+            ->with('items')
+            ->firstOrFail();
+
+        // Strict customer authorization
+        if ((int) $order->user_id !== (int) $user->id && !$user->isStaffOrAdmin()) {
+            return response()->json([
+                'message' => 'Access Denied: You do not have authorization to cancel this order.',
+            ], 403);
+        }
+
+        // State Machine validation: only pending orders can be cancelled directly by customer
+        if ($order->order_status !== 'pending') {
+            return response()->json([
+                'success' => false,
+                'message' => "Order #{$order->order_number} cannot be cancelled because it is already {$order->order_status}.",
+            ], 422);
+        }
+
+        DB::transaction(function () use ($order, $user) {
+            // 1. Restore product & variant inventory
+            foreach ($order->items as $item) {
+                if ($item->variant_id) {
+                    $variant = ProductVariant::where('id', $item->variant_id)->lockForUpdate()->first();
+                    if ($variant) {
+                        $variant->increment('stock_quantity', $item->quantity);
+                    }
+                }
+                $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+                if ($product) {
+                    $product->increment('stock_quantity', $item->quantity);
+                }
+            }
+
+            // 2. Reverse Promotions & Coupons
+            PromotionEngine::reverseOrderRedemptions($order, "Order cancelled by customer {$user->name}");
+
+            // 3. Post Accounting Cancellation
+            try {
+                AccountingService::postOrderCancellation($order);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Accounting cancellation post deferred: " . $e->getMessage());
+            }
+
+            // 4. Record Timeline
+            OrderTimelineService::recordEvent(
+                order: $order,
+                eventType: 'cancelled',
+                title: 'Order Cancelled by Customer',
+                description: "Order #{$order->order_number} was cancelled by customer {$user->name}. Inventory and redemptions restored.",
+                actorName: $user->name ?: 'Customer'
+            );
+
+            // 5. Update Status
+            $order->update(['order_status' => 'cancelled']);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Order successfully cancelled.',
+            'order_status' => 'cancelled',
+            'order' => $order->fresh(['items']),
+        ]);
+    }
+
+    /**
+     * Customer self-service order return request.
+     * Allowed only for 'delivered' orders.
+     */
+    public function requestReturn(Request $request, string $orderNumber, OrderReturnService $returnService): JsonResponse
+    {
+        $user = $request->user();
+
+        $order = Order::where('order_number', $orderNumber)
+            ->with('items')
+            ->firstOrFail();
+
+        // Strict customer authorization
+        if ((int) $order->user_id !== (int) $user->id && !$user->isStaffOrAdmin()) {
+            return response()->json([
+                'message' => 'Access Denied: You do not have authorization to request a return for this order.',
+            ], 403);
+        }
+
+        if ($order->order_status !== 'delivered') {
+            return response()->json([
+                'message' => 'Returns can only be requested for delivered orders.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'return_reason' => 'required|string|max:500',
+            'notes' => 'nullable|string|max:1000',
+        ]);
+
+        $orderReturn = $returnService->createReturn($order, [
+            'return_type' => 'customer_return',
+            'return_reason' => $validated['return_reason'],
+            'notes' => $validated['notes'] ?? null,
+        ], $user);
+
+        return response()->json([
+            'message' => 'Return request submitted successfully.',
+            'return' => $orderReturn,
+            'order' => $order->fresh(),
+        ], 201);
     }
 }
 

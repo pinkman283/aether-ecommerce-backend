@@ -43,8 +43,11 @@ use App\Http\Controllers\Api\AdminVendorController;
 use App\Http\Controllers\Api\AdminVendorProductController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BrandController;
+use App\Http\Controllers\Api\CartValidationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CouponController;
+use App\Http\Controllers\Api\CustomerCartController;
+use App\Http\Controllers\Api\CustomerWishlistController;
 use App\Http\Controllers\Api\HomepageSectionController;
 use App\Http\Controllers\Api\LeadCaptureController;
 use App\Http\Controllers\Api\OrderController;
@@ -75,7 +78,8 @@ Route::get('/health', function () {
         $checks['database'] = ['status' => 'healthy', 'message' => 'Connected'];
     } catch (\Throwable $e) {
         $status = 'degraded';
-        $checks['database'] = ['status' => 'unhealthy', 'message' => $e->getMessage()];
+        \Illuminate\Support\Facades\Log::error('Health check DB error: ' . $e->getMessage());
+        $checks['database'] = ['status' => 'unhealthy', 'message' => 'Database connection unavailable'];
     }
 
     // 2. Cache Check
@@ -84,7 +88,8 @@ Route::get('/health', function () {
         $checks['cache'] = ['status' => 'healthy', 'message' => 'Read/write functional'];
     } catch (\Throwable $e) {
         $status = 'degraded';
-        $checks['cache'] = ['status' => 'unhealthy', 'message' => $e->getMessage()];
+        \Illuminate\Support\Facades\Log::error('Health check Cache error: ' . $e->getMessage());
+        $checks['cache'] = ['status' => 'unhealthy', 'message' => 'Cache store unavailable'];
     }
 
     // 3. Storage Writable Check
@@ -117,6 +122,7 @@ Route::get('/categories', [CategoryController::class, 'index']);
 Route::get('/categories/{slug}', [CategoryController::class, 'show']);
 Route::get('/brands', [BrandController::class, 'index']);
 Route::get('/brands/{slug}', [BrandController::class, 'show']);
+Route::post('/cart/validate', [CartValidationController::class, 'validateCart']);
 Route::post('/coupons/validate', [CouponController::class, 'validateCoupon'])->middleware('sliding-throttle:coupon-validation');
 Route::post('/promotions/evaluate', [PromotionController::class, 'evaluate']);
 Route::get('/promotions/claimable', [PromotionController::class, 'claimable']);
@@ -124,6 +130,7 @@ Route::get('/promotions/storefront', [PromotionController::class, 'storefrontPro
 Route::get('/promotions/campaign/{slug}', [PromotionController::class, 'campaignDetails']);
 Route::get('/orders/track/{orderNumber}', [OrderController::class, 'track']);
 Route::get('/shipping-zones', [OrderController::class, 'shippingZones']);
+Route::get('/payment-methods', [OrderController::class, 'paymentMethods']);
 Route::post('/webhooks/courier/{provider}', [\App\Http\Controllers\Api\CourierWebhookController::class, 'handle']);
 Route::get('/orders/{orderNumber}', [OrderController::class, 'show']);
 Route::post('/orders', [OrderController::class, 'store'])->middleware('sliding-throttle:order-checkout'); // Guest / Customer Checkout
@@ -228,6 +235,8 @@ Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function (
 
     // Customer Orders & Addresses
     Route::get('/orders', [OrderController::class, 'index']);
+    Route::post('/orders/{orderNumber}/cancel', [OrderController::class, 'cancel']);
+    Route::post('/orders/{orderNumber}/return', [OrderController::class, 'requestReturn']);
     Route::get('/addresses', [AddressController::class, 'index']);
     Route::post('/addresses', [AddressController::class, 'store']);
     Route::delete('/addresses/{id}', [AddressController::class, 'destroy']);
@@ -236,6 +245,18 @@ Route::middleware(['auth:sanctum', 'ability:customer:access'])->group(function (
     Route::post('/promotions/claim', [PromotionController::class, 'claim']);
     Route::get('/promotions/my-coupons', [PromotionController::class, 'myCoupons']);
     Route::get('/promotions/store-credit', [PromotionController::class, 'storeCredit']);
+
+    // Customer Server Cart Persistence & Synchronization
+    Route::get('/customer/cart', [CustomerCartController::class, 'getCart']);
+    Route::post('/customer/cart/sync', [CustomerCartController::class, 'syncCart']);
+    Route::post('/customer/cart/merge', [CustomerCartController::class, 'mergeCart']);
+    Route::delete('/customer/cart', [CustomerCartController::class, 'clearCart']);
+
+    // Customer Server Wishlist Persistence & Synchronization
+    Route::get('/customer/wishlist', [CustomerWishlistController::class, 'getWishlist']);
+    Route::post('/customer/wishlist/toggle', [CustomerWishlistController::class, 'toggleWishlist']);
+    Route::post('/customer/wishlist/merge', [CustomerWishlistController::class, 'mergeWishlist']);
+    Route::delete('/customer/wishlist', [CustomerWishlistController::class, 'clearWishlist']);
 });
 
 // ==========================================
@@ -263,10 +284,15 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
 
     // Product Management
     Route::get('/products', [AdminProductController::class, 'index']);
+    Route::get('/products/export', [AdminProductController::class, 'export']);
+    Route::post('/products/import/validate', [AdminProductController::class, 'importValidate']);
+    Route::post('/products/import/commit', [AdminProductController::class, 'importCommit']);
     Route::get('/products/{id}', [AdminProductController::class, 'show']);
     Route::post('/products/upload-image', [AdminProductController::class, 'uploadImage']);
+    Route::post('/products/delete-uncommitted-image', [AdminProductController::class, 'deleteUploadedImage']);
     Route::post('/products', [AdminProductController::class, 'store']);
     Route::post('/products/bulk-delete', [AdminProductController::class, 'bulkDestroy']);
+    Route::post('/products/bulk-update', [AdminProductController::class, 'bulkUpdate']);
     Route::put('/products/{id}', [AdminProductController::class, 'update']);
     Route::delete('/products/{id}', [AdminProductController::class, 'destroy']);
 
@@ -281,6 +307,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     // Brand Management
     Route::get('/brands', [AdminBrandController::class, 'index']);
     Route::get('/brands/{id}', [AdminBrandController::class, 'show']);
+    Route::post('/brands/upload-logo', [AdminBrandController::class, 'uploadLogo']);
     Route::post('/brands', [AdminBrandController::class, 'store']);
     Route::post('/brands/bulk-delete', [AdminBrandController::class, 'bulkDestroy']);
     Route::put('/brands/{id}', [AdminBrandController::class, 'update']);
@@ -288,12 +315,14 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
 
     // Color Swatch Management
     Route::get('/colors', [AdminColorController::class, 'index']);
+    Route::get('/colors/{id}', [AdminColorController::class, 'show']);
     Route::post('/colors', [AdminColorController::class, 'store']);
     Route::put('/colors/{id}', [AdminColorController::class, 'update']);
     Route::patch('/colors/{id}/status', [AdminColorController::class, 'toggleStatus']);
     Route::delete('/colors/{id}', [AdminColorController::class, 'destroy']);
 
     // Order Lifecycle & Fulfillment
+    Route::get('/orders/counts', [AdminOrderController::class, 'counts']);
     Route::get('/orders', [AdminOrderController::class, 'index']);
     Route::get('/orders/{id}', [AdminOrderController::class, 'show']);
     Route::post('/orders', [AdminOrderController::class, 'store']);
@@ -301,6 +330,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
     Route::put('/orders/{id}', [AdminOrderController::class, 'update']);
     Route::delete('/orders/{id}', [AdminOrderController::class, 'destroy']);
     Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
+    Route::post('/orders/{id}/payments', [AdminOrderController::class, 'recordPayment']);
     Route::post('/orders/{id}/refund', [AdminOrderController::class, 'refund'])->middleware('sliding-throttle:sensitive-admin-action');
 
     // Courier Logistics & Consignment Management
@@ -627,6 +657,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
             Route::get('/category-brands/{categoryId}', [AdminNavigationController::class, 'getCategoryBrands']);
             Route::match(['post', 'put'], '/category-brands/{categoryId}', [AdminNavigationController::class, 'updateCategoryBrands']);
             Route::get('/{id}', [AdminNavigationController::class, 'show']);
+            Route::post('/{id}/duplicate', [AdminNavigationController::class, 'duplicate']);
             Route::put('/{id}', [AdminNavigationController::class, 'update']);
             Route::delete('/{id}', [AdminNavigationController::class, 'destroy']);
         });
@@ -642,6 +673,7 @@ Route::middleware(['auth:sanctum', 'ability:admin:access', 'admin'])->prefix('ad
         Route::get('/category-brands/{categoryId}', [AdminNavigationController::class, 'getCategoryBrands']);
         Route::match(['post', 'put'], '/category-brands/{categoryId}', [AdminNavigationController::class, 'updateCategoryBrands']);
         Route::get('/{id}', [AdminNavigationController::class, 'show']);
+        Route::post('/{id}/duplicate', [AdminNavigationController::class, 'duplicate']);
         Route::put('/{id}', [AdminNavigationController::class, 'update']);
         Route::delete('/{id}', [AdminNavigationController::class, 'destroy']);
     });

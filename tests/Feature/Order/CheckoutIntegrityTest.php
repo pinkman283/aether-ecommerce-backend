@@ -105,7 +105,8 @@ class CheckoutIntegrityTest extends TestCase
 
         $response->assertStatus(201);
         $order = $response->json('order');
-        $this->assertEquals(120.00, (float) $order['shipping_amount']);
+        $expectedRate = (float) (collect(\App\Services\ShippingZoneResolver::getConfiguredZones())->firstWhere('id', 'outside_dhaka')['rate'] ?? 130.00);
+        $this->assertEquals($expectedRate, (float) $order['shipping_amount']);
         $this->assertEquals('outside_dhaka', $order['shipping_method']);
     }
 

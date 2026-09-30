@@ -20,6 +20,8 @@ return Application::configure(basePath: dirname(__DIR__))
             $middleware->trustProxies(at: array_map('trim', explode(',', $trusted)));
         }
 
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
+
         $middleware->alias([
             'admin' => EnsureAdmin::class,
             'super_admin' => EnsureSuperAdmin::class,

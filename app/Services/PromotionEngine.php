@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Coupon;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\Promotion;
@@ -228,11 +229,9 @@ class PromotionEngine
             $promoCode = PromotionCode::where('code', $cleanCode)->with('promotion')->first();
 
             if (!$promoCode) {
-                // Fallback: check direct code in promotions table
+                // Fallback 1: check direct code in promotions table
                 $directPromo = Promotion::where('slug', $cleanCode)->orWhere('name', $cleanCode)->first();
-                if (!$directPromo) {
-                    $codeErrorMessage = "Promo code '{$cleanCode}' is invalid.";
-                } else {
+                if ($directPromo) {
                     $promoCode = (object) [
                         'id' => null,
                         'code' => $cleanCode,
@@ -241,6 +240,43 @@ class PromotionEngine
                         'usage_limit' => $directPromo->total_usage_limit,
                         'used_count' => $directPromo->total_used_count,
                     ];
+                } else {
+                    // Fallback 2: check coupons table (legacy and admin coupon manager)
+                    $coupon = Coupon::where('code', $cleanCode)->first();
+                    if ($coupon) {
+                        $virtualPromo = new Promotion([
+                            'name' => 'Coupon ' . $coupon->code,
+                            'slug' => strtolower($coupon->code),
+                            'promotion_type' => 'discount_code',
+                            'discount_type' => $coupon->type === 'percentage' ? 'percentage' : 'fixed_amount',
+                            'discount_value' => (float) $coupon->value,
+                            'max_discount_amount' => $coupon->max_discount_amount ? (float) $coupon->max_discount_amount : null,
+                            'min_order_amount' => (float) ($coupon->min_order_amount ?? 0),
+                            'applies_to' => 'entire_order',
+                            'status' => $coupon->is_active ? 'active' : 'inactive',
+                            'starts_at' => $coupon->starts_at,
+                            'expires_at' => $coupon->expires_at,
+                            'total_usage_limit' => $coupon->usage_limit,
+                            'total_used_count' => (int) $coupon->used_count,
+                            'customer_eligibility' => 'all',
+                            'is_stackable' => false,
+                        ]);
+                        $virtualPromo->setRelation('productTargets', collect([]));
+                        $virtualPromo->setRelation('customerRestrictions', collect([]));
+                        $virtualPromo->setRelation('codes', collect([]));
+
+                        $promoCode = (object) [
+                            'id' => null,
+                            'code' => $coupon->code,
+                            'promotion' => $virtualPromo,
+                            'is_active' => (bool) $coupon->is_active,
+                            'usage_limit' => $coupon->usage_limit,
+                            'used_count' => (int) $coupon->used_count,
+                            'coupon_id' => $coupon->id,
+                        ];
+                    } else {
+                        $codeErrorMessage = "Promo code '{$cleanCode}' is invalid.";
+                    }
                 }
             }
 
@@ -265,29 +301,43 @@ class PromotionEngine
                     $normalizedEmail = $customerEmail ? self::normalizeEmail($customerEmail) : null;
                     $cleanPhone = $customerPhone ? preg_replace('/[^0-9]/', '', $customerPhone) : null;
 
-                    if ($user) {
-                        $alreadyRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                            ->where(function ($q) use ($user, $normalizedEmail) {
-                                $q->where('user_id', $user->id);
-                                if ($normalizedEmail) {
-                                    $q->orWhere('customer_email', $normalizedEmail)
-                                      ->orWhere('customer_email', $user->email);
-                                }
-                            })
-                            ->where('status', 'completed')
-                            ->count();
-                    } elseif ($normalizedEmail) {
-                        $alreadyRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                            ->where(function ($q) use ($normalizedEmail, $cleanPhone) {
-                                $q->where('customer_email', $normalizedEmail);
-                                if ($cleanPhone && strlen($cleanPhone) >= 7) {
-                                    $q->orWhereHas('order', function ($oq) use ($cleanPhone) {
-                                        $oq->where('customer_phone', 'like', "%{$cleanPhone}%");
-                                    });
-                                }
-                            })
-                            ->where('status', 'completed')
-                            ->count();
+                    if ($promo->per_customer_usage_limit !== null) {
+                        if ($user) {
+                            $alreadyRedeemedCount = PromotionRedemption::where(function ($q) use ($promo, $cleanCode) {
+                                    if ($promo->id) {
+                                        $q->where('promotion_id', $promo->id);
+                                    } else {
+                                        $q->where('code_used', $cleanCode);
+                                    }
+                                })
+                                ->where(function ($q) use ($user, $normalizedEmail) {
+                                    $q->where('user_id', $user->id);
+                                    if ($normalizedEmail) {
+                                        $q->orWhere('customer_email', $normalizedEmail)
+                                          ->orWhere('customer_email', $user->email);
+                                    }
+                                })
+                                ->where('status', 'completed')
+                                ->count();
+                        } elseif ($normalizedEmail) {
+                            $alreadyRedeemedCount = PromotionRedemption::where(function ($q) use ($promo, $cleanCode) {
+                                    if ($promo->id) {
+                                        $q->where('promotion_id', $promo->id);
+                                    } else {
+                                        $q->where('code_used', $cleanCode);
+                                    }
+                                })
+                                ->where(function ($q) use ($normalizedEmail, $cleanPhone) {
+                                    $q->where('customer_email', $normalizedEmail);
+                                    if ($cleanPhone && strlen($cleanPhone) >= 7) {
+                                        $q->orWhereHas('order', function ($oq) use ($cleanPhone) {
+                                            $oq->where('customer_phone', 'like', "%{$cleanPhone}%");
+                                        });
+                                    }
+                                })
+                                ->where('status', 'completed')
+                                ->count();
+                        }
                     }
 
                     if ($promo->per_customer_usage_limit !== null && $alreadyRedeemedCount >= $promo->per_customer_usage_limit) {
@@ -307,6 +357,7 @@ class PromotionEngine
                             }
                             $appliedPromotions[] = [
                                 'promotion_id' => $promo->id,
+                                'coupon_id' => $promoCode->coupon_id ?? null,
                                 'promotion_name' => $promo->name,
                                 'code' => $cleanCode,
                                 'type' => $promo->promotion_type,
@@ -803,56 +854,67 @@ class PromotionEngine
     ): void {
         foreach ($evalResult['applied_promotions'] as $applied) {
             $promoId = $applied['promotion_id'] ?? null;
-            if (!$promoId) {
-                continue;
-            }
+            $couponId = $applied['coupon_id'] ?? null;
+            $promo = null;
 
-            // Lock promotion row for concurrency safety
-            $promo = Promotion::where('id', $promoId)->lockForUpdate()->first();
-            if (!$promo) {
-                continue;
-            }
-
-            // Atomic total usage limit check inside the lock
-            if ($promo->total_usage_limit !== null && $promo->total_used_count >= $promo->total_usage_limit) {
-                if ($promo->promotion_type === 'automatic_discount') {
+            if ($promoId) {
+                // Lock promotion row for concurrency safety
+                $promo = Promotion::where('id', $promoId)->lockForUpdate()->first();
+                if (!$promo) {
                     continue;
                 }
-                throw new InvalidArgumentException("Promotion '{$promo->name}' has reached its total redemption limit.");
-            }
 
-            // Atomic per-customer usage limit check inside the lock
-            if ($promo->per_customer_usage_limit !== null) {
-                $userRedeemedCount = 0;
-                if ($user) {
-                    $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                        ->where(function ($q) use ($user, $customerEmail) {
-                            $q->where('user_id', $user->id);
-                            $norm = self::normalizeEmail($customerEmail);
-                            if ($norm) {
-                                $q->orWhere('customer_email', $norm)
-                                  ->orWhere('customer_email', $user->email);
-                            }
-                        })
-                        ->where('status', 'completed')
-                        ->count();
-                } elseif (!empty($customerEmail)) {
-                    $norm = self::normalizeEmail($customerEmail);
-                    $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
-                        ->where('customer_email', $norm)
-                        ->where('status', 'completed')
-                        ->count();
-                }
-
-                if ($userRedeemedCount >= $promo->per_customer_usage_limit) {
+                // Atomic total usage limit check inside the lock
+                if ($promo->total_usage_limit !== null && $promo->total_used_count >= $promo->total_usage_limit) {
                     if ($promo->promotion_type === 'automatic_discount') {
                         continue;
                     }
-                    throw new InvalidArgumentException("You have reached the maximum allowed redemptions ({$promo->per_customer_usage_limit}) for promotion '{$promo->name}'.");
+                    throw new InvalidArgumentException("Promotion '{$promo->name}' has reached its total redemption limit.");
+                }
+
+                // Atomic per-customer usage limit check inside the lock
+                if ($promo->per_customer_usage_limit !== null) {
+                    $userRedeemedCount = 0;
+                    if ($user) {
+                        $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
+                            ->where(function ($q) use ($user, $customerEmail) {
+                                $q->where('user_id', $user->id);
+                                $norm = self::normalizeEmail($customerEmail);
+                                if ($norm) {
+                                    $q->orWhere('customer_email', $norm)
+                                      ->orWhere('customer_email', $user->email);
+                                }
+                            })
+                            ->where('status', 'completed')
+                            ->count();
+                    } elseif (!empty($customerEmail)) {
+                        $norm = self::normalizeEmail($customerEmail);
+                        $userRedeemedCount = PromotionRedemption::where('promotion_id', $promo->id)
+                            ->where('customer_email', $norm)
+                            ->where('status', 'completed')
+                            ->count();
+                    }
+
+                    if ($userRedeemedCount >= $promo->per_customer_usage_limit) {
+                        if ($promo->promotion_type === 'automatic_discount') {
+                            continue;
+                        }
+                        throw new InvalidArgumentException("You have reached the maximum allowed redemptions ({$promo->per_customer_usage_limit}) for promotion '{$promo->name}'.");
+                    }
+                }
+
+                $promo->increment('total_used_count');
+            } elseif ($couponId || !empty($applied['code'])) {
+                // Legacy or admin coupon usage tracking
+                $couponQuery = $couponId ? Coupon::where('id', $couponId) : Coupon::where('code', $applied['code']);
+                $coupon = $couponQuery->lockForUpdate()->first();
+                if ($coupon) {
+                    if ($coupon->usage_limit !== null && $coupon->used_count >= $coupon->usage_limit) {
+                        throw new InvalidArgumentException("Coupon '{$coupon->code}' has reached its total redemption limit.");
+                    }
+                    $coupon->increment('used_count');
                 }
             }
-
-            $promo->increment('total_used_count');
 
             $codeId = null;
             if (!empty($applied['code'])) {
@@ -900,7 +962,7 @@ class PromotionEngine
             }
 
             // If customer restricted reward, mark used
-            if ($user) {
+            if ($user && $promo) {
                 PromotionCustomerRestriction::where('promotion_id', $promo->id)
                     ->where('user_id', $user->id)
                     ->update([
@@ -911,15 +973,15 @@ class PromotionEngine
 
             // Record immutable audit redemption
             PromotionRedemption::create([
-                'promotion_id' => $promo->id,
+                'promotion_id' => $promo?->id,
                 'promotion_code_id' => $codeId,
                 'promotion_claim_id' => $claimId,
                 'order_id' => $order->id,
                 'user_id' => $user?->id,
                 'customer_email' => self::normalizeEmail($customerEmail),
                 'code_used' => $applied['code'] ?? null,
-                'promotion_type' => $applied['type'] ?? $promo->promotion_type,
-                'discount_type' => $applied['discount_type'] ?? $promo->discount_type,
+                'promotion_type' => $applied['type'] ?? ($promo ? $promo->promotion_type : 'discount_code'),
+                'discount_type' => $applied['discount_type'] ?? ($promo ? $promo->discount_type : 'fixed_amount'),
                 'discount_amount' => (float) ($applied['discount_amount'] ?? 0.00),
                 'order_subtotal' => (float) $order->subtotal,
                 'order_total' => (float) $order->total_amount,
@@ -963,9 +1025,19 @@ class PromotionEngine
 
         foreach ($redemptions as $redemption) {
             // Decrement promotion usage counter
-            $promo = Promotion::where('id', $redemption->promotion_id)->lockForUpdate()->first();
-            if ($promo && $promo->total_used_count > 0) {
-                $promo->decrement('total_used_count');
+            if ($redemption->promotion_id) {
+                $promo = Promotion::where('id', $redemption->promotion_id)->lockForUpdate()->first();
+                if ($promo && $promo->total_used_count > 0) {
+                    $promo->decrement('total_used_count');
+                }
+            }
+
+            // Decrement legacy coupon usage counter
+            if ($redemption->code_used) {
+                $coupon = Coupon::where('code', $redemption->code_used)->lockForUpdate()->first();
+                if ($coupon && $coupon->used_count > 0) {
+                    $coupon->decrement('used_count');
+                }
             }
 
             // Decrement code usage counter
@@ -993,7 +1065,7 @@ class PromotionEngine
             }
 
             // Restore customer restriction
-            if ($redemption->user_id) {
+            if ($redemption->user_id && $redemption->promotion_id) {
                 PromotionCustomerRestriction::where('promotion_id', $redemption->promotion_id)
                     ->where('user_id', $redemption->user_id)
                     ->update([

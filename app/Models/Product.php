@@ -88,6 +88,12 @@ class Product extends Model
             \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
         });
 
+        static::deleting(function (Product $product) {
+            foreach ($product->images as $image) {
+                $image->delete();
+            }
+        });
+
         static::deleted(function () {
             \Illuminate\Support\Facades\Cache::forget('storefront_header_navigation');
         });

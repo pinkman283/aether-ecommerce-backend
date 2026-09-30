@@ -72,6 +72,14 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'risk_score',
+        'risk_level',
+        'risk_reasons',
+        'internal_notes',
+        'failed_login_attempts',
+        'locked_until',
+        'suspended_until',
+        'suspension_reason',
     ];
 
     protected function casts(): array
@@ -202,5 +210,15 @@ class User extends Authenticatable
     public function storeCreditTransactions(): HasMany
     {
         return $this->hasMany(StoreCreditTransaction::class);
+    }
+
+    public function cartItems(): HasMany
+    {
+        return $this->hasMany(CustomerCartItem::class);
+    }
+
+    public function wishlistItems(): HasMany
+    {
+        return $this->hasMany(CustomerWishlistItem::class);
     }
 }

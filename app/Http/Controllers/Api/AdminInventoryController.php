@@ -84,9 +84,24 @@ class AdminInventoryController extends Controller
             'unit_cost' => 'nullable|numeric|min:0',
         ]);
 
+        $hasVariants = $product->variants()->exists();
+        if ($hasVariants && empty($validated['variant_id'])) {
+            return response()->json([
+                'message' => "Product '{$product->name}' has variants. Stock adjustments must be made to a specific variant.",
+                'code' => 'VARIANT_REQUIRED_FOR_STOCK_ADJUSTMENT',
+            ], 422);
+        }
+
         $variant = !empty($validated['variant_id'])
             ? \App\Models\ProductVariant::where('id', $validated['variant_id'])->where('product_id', $product->id)->first()
             : null;
+
+        if (!empty($validated['variant_id']) && !$variant) {
+            return response()->json([
+                'message' => "The selected variant does not belong to product '{$product->name}'.",
+                'code' => 'INVALID_VARIANT_FOR_PRODUCT',
+            ], 422);
+        }
 
         $targetStock = $variant ? $variant->stock_quantity : $oldStock;
         $newStock = $targetStock + $validated['adjustment'];
@@ -106,6 +121,11 @@ class AdminInventoryController extends Controller
                 $request->user(),
                 isset($validated['unit_cost']) ? (float)$validated['unit_cost'] : null
             );
+
+            // Re-synchronize parent stock if product has variants
+            if ($variant) {
+                $product->syncStockFromVariants();
+            }
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }

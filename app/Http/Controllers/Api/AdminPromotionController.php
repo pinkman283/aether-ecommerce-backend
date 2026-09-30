@@ -109,13 +109,29 @@ class AdminPromotionController extends Controller
     {
         $this->checkPermission($request, 'coupons.manage');
 
+        if ($request->has('code')) {
+            $request->merge([
+                'code' => strtoupper(trim((string) $request->input('code'))),
+            ]);
+        }
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'slug' => 'nullable|string|max:255|unique:promotions,slug',
             'description' => 'nullable|string',
             'promotion_type' => 'required|in:discount_code,claimable_coupon,automatic_discount,customer_reward,next_order_discount',
             'discount_type' => 'required|in:percentage,fixed_amount,free_shipping,buy_x_get_y,product_fixed_discount,product_percentage_discount',
-            'discount_value' => 'required|numeric|min:0',
+            'discount_value' => [
+                'required',
+                'numeric',
+                'min:0',
+                function ($attribute, $value, $fail) use ($request) {
+                    $type = $request->input('discount_type');
+                    if (in_array($type, ['percentage', 'product_percentage_discount']) && (float) $value > 100) {
+                        $fail('Percentage discount cannot exceed 100%.');
+                    }
+                },
+            ],
             'max_discount_amount' => 'nullable|numeric|min:0',
             'bxgy_buy_quantity' => 'nullable|integer|min:1',
             'bxgy_get_quantity' => 'nullable|integer|min:1',
@@ -157,7 +173,7 @@ class AdminPromotionController extends Controller
             'terms_conditions' => 'nullable|string',
 
             // Codes (optional on creation)
-            'code' => 'nullable|string|max:50',
+            'code' => 'nullable|string|max:50|unique:promotion_codes,code',
             
             // Targets
             'product_ids' => 'nullable|array',
@@ -257,13 +273,26 @@ class AdminPromotionController extends Controller
         $promo = Promotion::findOrFail($id);
         $oldValues = $promo->toArray();
 
+        $effectiveDiscountType = $request->input('discount_type', $promo->discount_type);
+        $effectiveStartsAt = $request->input('starts_at', $promo->starts_at?->toIso8601String());
+
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'slug' => "sometimes|required|string|max:255|unique:promotions,slug,{$id}",
             'description' => 'nullable|string',
             'promotion_type' => 'sometimes|required|in:discount_code,claimable_coupon,automatic_discount,customer_reward,next_order_discount',
             'discount_type' => 'sometimes|required|in:percentage,fixed_amount,free_shipping,buy_x_get_y,product_fixed_discount,product_percentage_discount',
-            'discount_value' => 'sometimes|required|numeric|min:0',
+            'discount_value' => [
+                'sometimes',
+                'required',
+                'numeric',
+                'min:0',
+                function ($attribute, $value, $fail) use ($effectiveDiscountType) {
+                    if (in_array($effectiveDiscountType, ['percentage', 'product_percentage_discount']) && (float) $value > 100) {
+                        $fail('Percentage discount cannot exceed 100%.');
+                    }
+                },
+            ],
             'max_discount_amount' => 'nullable|numeric|min:0',
             'bxgy_buy_quantity' => 'nullable|integer|min:1',
             'bxgy_get_quantity' => 'nullable|integer|min:1',
@@ -279,7 +308,15 @@ class AdminPromotionController extends Controller
             'payment_methods' => 'nullable|array',
             'shipping_methods' => 'nullable|array',
             'starts_at' => 'nullable|date',
-            'expires_at' => 'nullable|date',
+            'expires_at' => [
+                'nullable',
+                'date',
+                function ($attribute, $value, $fail) use ($effectiveStartsAt) {
+                    if ($value && $effectiveStartsAt && strtotime($value) < strtotime($effectiveStartsAt)) {
+                        $fail('The expires at must be a date after or equal to starts at.');
+                    }
+                },
+            ],
             'claim_deadline' => 'nullable|date',
             'claim_validity_days' => 'nullable|integer|min:1',
             'total_usage_limit' => 'nullable|integer|min:1',

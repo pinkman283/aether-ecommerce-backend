@@ -15,7 +15,7 @@ class AdminCategoryController extends Controller
     {
         $this->checkPermission($request, 'categories.manage', 'products.view', 'products.manage');
 
-        $categories = Category::withCount('products')
+        $categories = Category::withCount(['products', 'subcategoryProducts', 'children'])
             ->with(['parent.parent.parent', 'children.children.children'])
             ->orderBy('display_order')
             ->get();
@@ -98,7 +98,7 @@ class AdminCategoryController extends Controller
 
         return response()->json([
             'message' => 'Category created successfully',
-            'category' => $category->loadCount('products')->load('parent'),
+            'category' => $category->loadCount(['products', 'subcategoryProducts', 'children'])->load('parent'),
         ], 201);
     }
 
@@ -155,7 +155,7 @@ class AdminCategoryController extends Controller
 
         return response()->json([
             'message' => 'Category updated successfully',
-            'category' => $category->loadCount('products')->load('parent'),
+            'category' => $category->loadCount(['products', 'subcategoryProducts', 'children'])->load('parent'),
         ]);
     }
 
@@ -163,12 +163,29 @@ class AdminCategoryController extends Controller
     {
         $this->checkPermission($request, 'categories.manage');
 
-        $category = Category::withCount('products')->findOrFail($id);
+        $category = Category::withCount(['products', 'subcategoryProducts', 'children'])->findOrFail($id);
 
+        $reasons = [];
         if ($category->products_count > 0) {
-            $productCountText = $category->products_count === 1 ? '1 product assigned' : "{$category->products_count} products assigned";
+            $reasons[] = $category->products_count === 1
+                ? '1 product assigned directly'
+                : "{$category->products_count} products assigned directly";
+        }
+        if ($category->subcategory_products_count > 0) {
+            $reasons[] = $category->subcategory_products_count === 1
+                ? '1 product using it as a subcategory'
+                : "{$category->subcategory_products_count} products using it as a subcategory";
+        }
+        if ($category->children_count > 0) {
+            $reasons[] = $category->children_count === 1
+                ? '1 child subcategory under it'
+                : "{$category->children_count} child subcategories under it";
+        }
+
+        if (!empty($reasons)) {
+            $reasonStr = implode(', and ', $reasons);
             return response()->json([
-                'message' => "Cannot delete category '{$category->name}' because there are {$productCountText} to it. Reassign or delete those products first.",
+                'message' => "Cannot delete category '{$category->name}' because there are {$reasonStr}. Reassign or remove these relationships first.",
             ], 422);
         }
 
@@ -202,10 +219,14 @@ class AdminCategoryController extends Controller
         $skippedNames = [];
 
         foreach ($validated['ids'] as $id) {
-            $category = Category::withCount('products')->find($id);
+            $category = Category::withCount(['products', 'subcategoryProducts', 'children'])->find($id);
             if (!$category) continue;
 
-            if ($category->products_count > 0) {
+            $isBlocked = ($category->products_count > 0) ||
+                         ($category->subcategory_products_count > 0) ||
+                         ($category->children_count > 0);
+
+            if ($isBlocked) {
                 $skippedCount++;
                 if (count($skippedNames) < 3) {
                     $skippedNames[] = "'{$category->name}'";
@@ -229,10 +250,10 @@ class AdminCategoryController extends Controller
         if ($deletedCount === 0 && $skippedCount > 0) {
             $nameStr = !empty($skippedNames) ? ' (' . implode(', ', $skippedNames) . ')' : '';
             $message = $skippedCount === 1
-                ? "Cannot delete category{$nameStr} because there are products assigned to it. Reassign or delete those products first."
-                : "Cannot delete {$skippedCount} categories because there are products assigned to them. Reassign or delete those products first.";
+                ? "Cannot delete category{$nameStr} because it has products or subcategories attached. Reassign or remove them first."
+                : "Cannot delete {$skippedCount} categories because they have products or subcategories attached. Reassign or remove them first.";
         } elseif ($deletedCount > 0 && $skippedCount > 0) {
-            $message = "Deleted {$deletedCount} category/categories. Cannot delete {$skippedCount} category/categories because there are products assigned to them.";
+            $message = "Deleted {$deletedCount} category/categories. Cannot delete {$skippedCount} category/categories because they have products or subcategories attached.";
         } else {
             $message = "Successfully deleted {$deletedCount} category/categories.";
         }

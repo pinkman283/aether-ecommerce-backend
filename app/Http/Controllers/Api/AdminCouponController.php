@@ -39,10 +39,25 @@ class AdminCouponController extends Controller
     {
         $this->checkPermission($request, 'coupons.manage');
 
+        if ($request->has('code')) {
+            $request->merge([
+                'code' => strtoupper(trim((string) $request->input('code'))),
+            ]);
+        }
+
         $validated = $request->validate([
             'code' => 'required|string|max:50|unique:coupons,code',
             'type' => 'required|in:percentage,fixed',
-            'value' => 'required|numeric|min:0.01',
+            'value' => [
+                'required',
+                'numeric',
+                'min:0.01',
+                function ($attribute, $value, $fail) use ($request) {
+                    if ($request->input('type') === 'percentage' && (float) $value > 100) {
+                        $fail('Percentage discount cannot exceed 100%.');
+                    }
+                },
+            ],
             'min_order_amount' => 'nullable|numeric|min:0',
             'max_discount_amount' => 'nullable|numeric|min:0',
             'usage_limit' => 'nullable|integer|min:1',
@@ -51,7 +66,6 @@ class AdminCouponController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $validated['code'] = strtoupper(trim($validated['code']));
         $coupon = Coupon::create($validated);
 
         AuditLog::log(
@@ -75,21 +89,44 @@ class AdminCouponController extends Controller
         $coupon = Coupon::findOrFail($id);
         $oldValues = $coupon->toArray();
 
+        if ($request->has('code')) {
+            $request->merge([
+                'code' => strtoupper(trim((string) $request->input('code'))),
+            ]);
+        }
+
+        $effectiveType = $request->input('type', $coupon->type);
+        $effectiveStartsAt = $request->input('starts_at', $coupon->starts_at?->toIso8601String());
+
         $validated = $request->validate([
             'code' => "sometimes|required|string|max:50|unique:coupons,code,{$id}",
             'type' => 'sometimes|required|in:percentage,fixed',
-            'value' => 'sometimes|required|numeric|min:0.01',
+            'value' => [
+                'sometimes',
+                'required',
+                'numeric',
+                'min:0.01',
+                function ($attribute, $value, $fail) use ($effectiveType) {
+                    if ($effectiveType === 'percentage' && (float) $value > 100) {
+                        $fail('Percentage discount cannot exceed 100%.');
+                    }
+                },
+            ],
             'min_order_amount' => 'nullable|numeric|min:0',
             'max_discount_amount' => 'nullable|numeric|min:0',
             'usage_limit' => 'nullable|integer|min:1',
             'starts_at' => 'nullable|date',
-            'expires_at' => 'nullable|date',
+            'expires_at' => [
+                'nullable',
+                'date',
+                function ($attribute, $value, $fail) use ($effectiveStartsAt) {
+                    if ($value && $effectiveStartsAt && strtotime($value) < strtotime($effectiveStartsAt)) {
+                        $fail('The expires at must be a date after or equal to starts at.');
+                    }
+                },
+            ],
             'is_active' => 'boolean',
         ]);
-
-        if (isset($validated['code'])) {
-            $validated['code'] = strtoupper(trim($validated['code']));
-        }
 
         $coupon->fill($validated);
         $wasDirty = $coupon->isDirty();

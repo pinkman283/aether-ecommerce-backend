@@ -41,7 +41,7 @@ class Setting extends Model
             if ($taxSetting) {
                 return filter_var($taxSetting->value, FILTER_VALIDATE_BOOLEAN);
             }
-            return true;
+            return false;
         }
         return filter_var($setting->value, FILTER_VALIDATE_BOOLEAN);
     }

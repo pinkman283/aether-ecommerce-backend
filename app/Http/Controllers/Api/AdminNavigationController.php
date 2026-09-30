@@ -27,30 +27,43 @@ class AdminNavigationController extends Controller
         return response()->json($items);
     }
 
+    /**
+     * Return complete hierarchical tree for admin with arbitrary depth and validation status.
+     */
     public function tree(Request $request): JsonResponse
     {
         $this->checkPermission($request, 'online_store.manage', 'categories.manage', 'settings.manage');
 
-        $items = NavbarItem::root()
-            ->with([
-                'category',
-                'subcategory',
-                'brand',
-                'children' => function ($q) {
-                    $q->orderBy('display_order')->with([
-                        'category',
-                        'subcategory',
-                        'brand',
-                        'children' => function ($subQ) {
-                            $subQ->orderBy('display_order')->with(['category', 'subcategory', 'brand']);
-                        }
-                    ]);
-                }
-            ])
+        $allItems = NavbarItem::with(['category', 'subcategory', 'brand', 'parent'])
             ->orderBy('display_order')
             ->get();
 
-        return response()->json($items);
+        $grouped = [];
+        foreach ($allItems as $item) {
+            $pId = $item->parent_id ?? 0;
+            $grouped[$pId][] = $item;
+        }
+
+        $tree = $this->buildAdminTree($grouped, 0);
+
+        return response()->json($tree);
+    }
+
+    private function buildAdminTree(array &$grouped, int $parentId, int $depth = 0): array
+    {
+        if ($depth > 12 || !isset($grouped[$parentId])) {
+            return [];
+        }
+
+        $branch = [];
+        foreach ($grouped[$parentId] as $item) {
+            $itemArray = $item->toArray();
+            $itemArray['depth'] = $depth;
+            $itemArray['children'] = $this->buildAdminTree($grouped, $item->id, $depth + 1);
+            $branch[] = $itemArray;
+        }
+
+        return $branch;
     }
 
     public function options(Request $request): JsonResponse
@@ -75,9 +88,29 @@ class AdminNavigationController extends Controller
                 ->get(['id', 'title', 'slug', 'slug as url']);
         }
 
-        $potentialParents = NavbarItem::whereNull('parent_id')
-            ->orderBy('display_order')
-            ->get(['id', 'title', 'type']);
+        // Build potential parents list with breadcrumb paths so any node can be a parent
+        $allItems = NavbarItem::orderBy('parent_id')->orderBy('display_order')->get(['id', 'parent_id', 'title', 'type']);
+        $itemMap = $allItems->keyBy('id');
+
+        $potentialParents = $allItems->map(function ($item) use ($itemMap) {
+            $pathParts = [$item->title];
+            $curr = $item;
+            $depth = 0;
+
+            while ($curr->parent_id && isset($itemMap[$curr->parent_id]) && $depth < 10) {
+                $curr = $itemMap[$curr->parent_id];
+                array_unshift($pathParts, $curr->title);
+                $depth++;
+            }
+
+            return [
+                'id' => $item->id,
+                'title' => $item->title,
+                'type' => $item->type,
+                'depth' => $depth,
+                'path' => implode('  ›  ', $pathParts),
+            ];
+        })->sortBy('path')->values()->all();
 
         return response()->json([
             'root_categories' => $rootCategories,
@@ -109,6 +142,16 @@ class AdminNavigationController extends Controller
             'mega_menu_type' => 'nullable|in:none,category_brand_grid,columns,standard_dropdown',
         ]);
 
+        // Validate catalog relationship consistency
+        if ($validated['type'] === 'subcategory' && !empty($validated['subcategory_id']) && !empty($validated['category_id'])) {
+            $sub = Category::find($validated['subcategory_id']);
+            if ($sub && (int) $sub->parent_id !== (int) $validated['category_id']) {
+                return response()->json([
+                    'message' => 'The selected subcategory does not belong to the selected parent category in the catalog.',
+                ], 422);
+            }
+        }
+
         if (!isset($validated['display_order'])) {
             $maxOrder = NavbarItem::where('parent_id', $validated['parent_id'] ?? null)->max('display_order');
             $validated['display_order'] = is_null($maxOrder) ? 0 : $maxOrder + 1;
@@ -118,16 +161,19 @@ class AdminNavigationController extends Controller
             $validated['mega_menu_type'] = 'none';
         }
 
-        $item = NavbarItem::create($validated);
-        Cache::forget('storefront_header_navigation');
+        $item = DB::transaction(function () use ($validated, $request) {
+            $created = NavbarItem::create($validated);
 
-        AuditLog::log(
-            $request->user(),
-            'navbar.created',
-            'NavbarItem',
-            $item->id,
-            "Created navigation item '{$item->title}'"
-        );
+            AuditLog::log(
+                $request->user(),
+                'navbar.created',
+                'NavbarItem',
+                $created->id,
+                "Created navigation item '{$created->title}'"
+            );
+
+            return $created;
+        });
 
         return response()->json([
             'message' => 'Navigation item created successfully',
@@ -166,20 +212,46 @@ class AdminNavigationController extends Controller
             'mega_menu_type' => 'nullable|in:none,category_brand_grid,columns,standard_dropdown',
         ]);
 
-        if (array_key_exists('parent_id', $validated) && $validated['parent_id'] == $item->id) {
+        // Cycle Protection: item cannot be its own parent
+        if (array_key_exists('parent_id', $validated) && (int) $validated['parent_id'] === (int) $item->id) {
             return response()->json(['message' => 'An item cannot be its own parent.'], 422);
         }
 
-        $item->update($validated);
-        Cache::forget('storefront_header_navigation');
+        // Cycle Protection: item cannot be parented under any of its own descendants
+        if (!empty($validated['parent_id'])) {
+            $descendantIds = $item->getAllDescendantIds();
+            if (in_array((int) $validated['parent_id'], $descendantIds, true)) {
+                return response()->json([
+                    'message' => 'Circular hierarchy detected: an item cannot be parented under one of its own descendants.',
+                ], 422);
+            }
+        }
 
-        AuditLog::log(
-            $request->user(),
-            'navbar.updated',
-            'NavbarItem',
-            $item->id,
-            "Updated navigation item '{$item->title}'"
-        );
+        // Catalog consistency check
+        $effectiveType = $validated['type'] ?? $item->type;
+        $effectiveSubId = array_key_exists('subcategory_id', $validated) ? $validated['subcategory_id'] : $item->subcategory_id;
+        $effectiveCatId = array_key_exists('category_id', $validated) ? $validated['category_id'] : $item->category_id;
+
+        if ($effectiveType === 'subcategory' && !empty($effectiveSubId) && !empty($effectiveCatId)) {
+            $sub = Category::find($effectiveSubId);
+            if ($sub && (int) $sub->parent_id !== (int) $effectiveCatId) {
+                return response()->json([
+                    'message' => 'The selected subcategory does not belong to the selected parent category in the catalog.',
+                ], 422);
+            }
+        }
+
+        DB::transaction(function () use ($item, $validated, $request) {
+            $item->update($validated);
+
+            AuditLog::log(
+                $request->user(),
+                'navbar.updated',
+                'NavbarItem',
+                $item->id,
+                "Updated navigation item '{$item->title}'"
+            );
+        });
 
         return response()->json([
             'message' => 'Navigation item updated successfully',
@@ -194,22 +266,78 @@ class AdminNavigationController extends Controller
         $item = NavbarItem::findOrFail($id);
         $title = $item->title;
 
-        $item->delete();
-        Cache::forget('storefront_header_navigation');
+        DB::transaction(function () use ($item, $id, $title, $request) {
+            $item->delete();
 
-        AuditLog::log(
-            $request->user(),
-            'navbar.deleted',
-            'NavbarItem',
-            $id,
-            "Deleted navigation item '{$title}'"
-        );
+            AuditLog::log(
+                $request->user(),
+                'navbar.deleted',
+                'NavbarItem',
+                $id,
+                "Deleted navigation item '{$title}'"
+            );
+        });
 
         return response()->json([
             'message' => 'Navigation item deleted successfully',
         ]);
     }
 
+    /**
+     * Duplicate a navigation item and all its descendants recursively.
+     */
+    public function duplicate(Request $request, int $id): JsonResponse
+    {
+        $this->checkPermission($request, 'online_store.manage', 'categories.manage', 'settings.manage');
+
+        $original = NavbarItem::findOrFail($id);
+
+        $duplicatedItem = DB::transaction(function () use ($original, $request) {
+            return $this->recursivelyCloneNode($original, $original->parent_id, true, $request->user());
+        });
+
+        return response()->json([
+            'message' => "Successfully duplicated '{$original->title}' and its hierarchy",
+            'item' => $duplicatedItem->load(['category', 'subcategory', 'brand', 'parent']),
+        ], 201);
+    }
+
+    private function recursivelyCloneNode(NavbarItem $node, ?int $newParentId, bool $isRootClone = false, $user = null): NavbarItem
+    {
+        $attributes = $node->toArray();
+        unset($attributes['id'], $attributes['created_at'], $attributes['updated_at'], $attributes['computed_url'], $attributes['is_valid'], $attributes['invalid_reason'], $attributes['category'], $attributes['subcategory'], $attributes['brand'], $attributes['parent'], $attributes['children'], $attributes['active_children']);
+
+        $attributes['parent_id'] = $newParentId;
+        if ($isRootClone) {
+            $attributes['title'] = $node->title . ' (Copy)';
+            $maxOrder = NavbarItem::where('parent_id', $newParentId)->max('display_order');
+            $attributes['display_order'] = is_null($maxOrder) ? 0 : $maxOrder + 1;
+        }
+
+        $clone = NavbarItem::create($attributes);
+
+        if ($user) {
+            AuditLog::log(
+                $user,
+                'navbar.duplicated',
+                'NavbarItem',
+                $clone->id,
+                "Duplicated navigation item '{$clone->title}'"
+            );
+        }
+
+        // Recursively clone all children
+        $children = NavbarItem::where('parent_id', $node->id)->orderBy('display_order')->get();
+        foreach ($children as $child) {
+            $this->recursivelyCloneNode($child, $clone->id, false, $user);
+        }
+
+        return $clone;
+    }
+
+    /**
+     * Atomic hierarchy reordering / nesting update.
+     */
     public function reorder(Request $request): JsonResponse
     {
         $this->checkPermission($request, 'online_store.manage', 'categories.manage', 'settings.manage');
@@ -221,6 +349,31 @@ class AdminNavigationController extends Controller
             'items.*.parent_id' => 'nullable|integer|exists:navbar_items,id',
         ]);
 
+        // Validate cycle prevention across the entire reorder payload
+        $idToParent = [];
+        foreach ($validated['items'] as $itemData) {
+            $idToParent[$itemData['id']] = $itemData['parent_id'] ?? null;
+        }
+
+        foreach ($idToParent as $id => $parentId) {
+            if ($parentId === $id) {
+                return response()->json(['message' => 'An item cannot be its own parent.'], 422);
+            }
+
+            // Trace parent chain up to detect loop
+            $visited = [$id => true];
+            $curr = $parentId;
+            while ($curr !== null) {
+                if (isset($visited[$curr])) {
+                    return response()->json([
+                        'message' => 'Circular navigation hierarchy detected. Operation cancelled.',
+                    ], 422);
+                }
+                $visited[$curr] = true;
+                $curr = $idToParent[$curr] ?? NavbarItem::where('id', $curr)->value('parent_id');
+            }
+        }
+
         DB::transaction(function () use ($validated) {
             foreach ($validated['items'] as $itemData) {
                 NavbarItem::where('id', $itemData['id'])->update([
@@ -230,8 +383,6 @@ class AdminNavigationController extends Controller
                 ]);
             }
         });
-
-        Cache::forget('storefront_header_navigation');
 
         return response()->json([
             'message' => 'Navigation order updated successfully',
@@ -293,8 +444,6 @@ class AdminNavigationController extends Controller
                 DB::table('category_brand')->insert($insertData);
             }
         });
-
-        Cache::forget('storefront_header_navigation');
 
         return response()->json([
             'message' => 'Category brands updated successfully',
